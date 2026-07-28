@@ -1,0 +1,61 @@
+[tool.poetry]
+name = "upside-python-sdk"
+version = "0.1.0"
+description = "Python SDK for the Upside perpetuals exchange (REST + WebSocket)."
+authors = ["Upside <dev@upsidemax.xyz>"]
+license = "MIT"
+readme = "README.md"
+homepage = "https://docs.upsidemax.xyz"
+repository = "https://github.com/upsidemax/upside-python-sdk"
+documentation = "https://docs.upsidemax.xyz"
+keywords = ["upside", "perpetuals", "dex", "trading", "eip712", "websocket"]
+packages = [{ include = "upside", from = "src" }]
+
+[tool.poetry.dependencies]
+python = "^3.9"
+requests = ">=2.31.0"
+websocket-client = "^1.7.0"
+eth-account = ">=0.10,<0.14"
+eth-utils = ">=2.3.0"
+typing-extensions = { version = ">=4.5.0", python = "<3.11" }
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.3.0"
+pytest-cov = "^5.0.0"
+responses = "^0.25.0"
+black = "^24.10.0"
+ruff = "^0.7.0"
+mypy = "^1.13.0"
+types-requests = ">=2.31.0"
+pre-commit = "^3.8.0"
+
+[build-system]
+requires = ["poetry-core>=1.9.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.black]
+line-length = 120
+target-version = ["py39"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py39"
+
+[tool.ruff.lint]
+# UP (pyupgrade) is intentionally excluded: the SDK targets Python 3.9 and uses
+# typing.List/Optional style consistent with the reference SDKs.
+select = ["E", "F", "W", "I", "B"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.9"
+warn_unused_ignores = true
+warn_return_any = true
+no_implicit_optional = true
+strict_equality = true
+check_untyped_defs = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+addopts = "--strict-markers -ra"
+testpaths = ["tests"]

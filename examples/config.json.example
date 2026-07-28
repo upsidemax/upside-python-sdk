@@ -1,0 +1,8 @@
+{
+  "base_url": "https://dev.upsidemax.xyz",
+  "private_key": "0x0000000000000000000000000000000000000000000000000000000000000000",
+  "account_id": null,
+  "invite_code": "",
+  "market_deployer_id": 1,
+  "usdc_coin_id": 1
+}
