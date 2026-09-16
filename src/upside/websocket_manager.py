@@ -86,7 +86,7 @@ class WebsocketManager(threading.Thread):
         # http(s)://host  ->  ws(s)://host/ws
         self.ws_url = "ws" + base_url.rstrip("/")[len("http") :] + "/ws"
         self.ping_interval = ping_interval
-        # A User-Agent header is required to pass the CloudFront edge in front of QA.
+        # A User-Agent header is required to pass the CloudFront edge in front of UAT.
         self._headers = [f"User-Agent: {user_agent}"]
         self._logger = logging.getLogger("upside.ws")
 

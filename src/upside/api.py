@@ -23,7 +23,7 @@ class API:
     """Thin POST-only client with status-based exception mapping."""
 
     def __init__(self, base_url: Optional[str] = None, timeout: Optional[float] = None) -> None:
-        self.base_url = (base_url or constants.QA_API_URL).rstrip("/")
+        self.base_url = (base_url or constants.UAT_API_URL).rstrip("/")
         self.timeout = timeout
         self.session = requests.Session()
         self.session.headers.update({"Content-Type": "application/json"})

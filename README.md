@@ -10,7 +10,7 @@ and realtime WebSocket streams. Authentication is EIP-712 wallet-signed
 - Raw-dict responses, `TypedDict` inputs, full type hints (ships `py.typed`).
 - Agent (API-wallet) delegation, TP/SL, leverage/margin, and collateral actions.
 
-> The default environment is the **QA testnet** (`https://dev.upsidemax.xyz`).
+> The default environment is the **UAT testnet** (`https://dev.upsidemax.xyz`).
 > Contract IDs, scales, and tick/step sizes are server-assigned — always read
 > them from `configs`, never hardcode.
 
@@ -30,16 +30,16 @@ from upside import Info, Exchange
 from upside.utils import constants
 
 # --- reads (no signing) ---
-info = Info(base_url=constants.QA_API_URL)
+info = Info(base_url=constants.UAT_API_URL)
 cfg = info.configs()
 contract = next(c for c in cfg["contracts"] if c["status"] == "Active")
 asset = contract["contractId"]
 print(info.market_state(asset))
 
 # --- writes (EIP-712 signed) ---
-exchange = Exchange("0x<private-key>", base_url=constants.QA_API_URL)
+exchange = Exchange("0x<private-key>", base_url=constants.UAT_API_URL)
 
-# Register (QA requires an invite code from the Upside team). A 10,000 USDC
+# Register (UAT requires an invite code from the Upside team). A 10,000 USDC
 # test airdrop lands within ~10s.
 exchange.register_account(invite_code="<invite-code>")
 
@@ -113,7 +113,7 @@ server routes agent-signed actions to the master account.
 
 ```python
 response, agent_key = master.approve_agent(agent_name="bot1")   # generates a fresh key
-agent = Exchange(agent_key, base_url=constants.QA_API_URL, account_id=master.account_id)
+agent = Exchange(agent_key, base_url=constants.UAT_API_URL, account_id=master.account_id)
 agent.order(asset=1, is_buy=True, size="10", price="50")
 master.revoke_agent(agent.address)
 ```
@@ -121,7 +121,7 @@ master.revoke_agent(agent.address)
 ## WebSocket streams
 
 ```python
-info = Info(base_url=constants.QA_API_URL)          # WS starts automatically
+info = Info(base_url=constants.UAT_API_URL)          # WS starts automatically
 
 sid = info.subscribe({"type": "l2Book", "asset": "1"}, lambda m: print(m["data"]["bookVersion"]))
 info.subscribe({"type": "trades", "asset": "1"}, print)

@@ -8,7 +8,10 @@ them from ``Info.configs()`` rather than hardcoding.
 # REST + WebSocket base URL. The base URL is the scheme + host only; the SDK
 # appends ``/info``, ``/exchange`` for REST and derives the ``/ws`` path. Pass a
 # different ``base_url`` to Info/Exchange for other environments.
-QA_API_URL = "https://dev.upsidemax.xyz"
+UAT_API_URL = "https://dev.upsidemax.xyz"
+
+# Deprecated alias kept for callers written against the pre-rename name.
+QA_API_URL = UAT_API_URL
 
 # EIP-712 signing domain (see https://docs.upsidemax.xyz/guide/authentication).
 CHAIN_ID = 9767

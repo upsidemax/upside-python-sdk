@@ -65,8 +65,8 @@ class Exchange(API):
     ) -> Dict[str, Any]:
         """Register the wallet and receive an ``accountId`` (typed path).
 
-        ``invite_code`` is required in gated environments (QA) and is sent
-        unsigned at the envelope top level. On QA a successful registration
+        ``invite_code`` is required in gated environments (UAT) and is sent
+        unsigned at the envelope top level. On UAT a successful registration
         triggers a 10,000 USDC test airdrop within ~10s.
         """
         action = {"type": "registerAccount", "address": (address or self.address).lower()}

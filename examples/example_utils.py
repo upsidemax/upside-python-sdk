@@ -1,8 +1,8 @@
 """Shared bootstrap for the example scripts.
 
 Copy ``config.json.example`` to ``config.json`` and fill in your test wallet's
-``private_key`` and (for QA) an ``invite_code`` from the Upside team. All
-examples run against the QA testnet by default.
+``private_key`` and (for UAT) an ``invite_code`` from the Upside team. All
+examples run against the UAT testnet by default.
 """
 
 import json
@@ -25,7 +25,7 @@ def load_config() -> Dict[str, Any]:
 def setup(skip_ws: bool = True) -> Tuple[Dict[str, Any], Info, Exchange]:
     """Return ``(config, info, exchange)`` wired to the configured environment."""
     config = load_config()
-    base_url = config.get("base_url") or constants.QA_API_URL
+    base_url = config.get("base_url") or constants.UAT_API_URL
     info = Info(base_url=base_url, skip_ws=skip_ws)
     exchange = Exchange(config["private_key"], base_url=base_url, account_id=config.get("account_id"))
     return config, info, exchange

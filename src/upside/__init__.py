@@ -5,10 +5,10 @@ Quick start::
     from upside import Info, Exchange
     from upside.utils import constants
 
-    info = Info(base_url=constants.QA_API_URL)
+    info = Info(base_url=constants.UAT_API_URL)
     print(info.configs())
 
-    exchange = Exchange(private_key, base_url=constants.QA_API_URL)
+    exchange = Exchange(private_key, base_url=constants.UAT_API_URL)
     exchange.order(asset=1, is_buy=True, size="10", price="50")
 
 See https://docs.upsidemax.xyz for the full API reference.

@@ -1,4 +1,4 @@
-"""Register a new account on QA and wait for the 10,000 USDC test airdrop.
+"""Register a new account on UAT and wait for the 10,000 USDC test airdrop.
 
 Set ``private_key`` and ``invite_code`` in config.json first. On success the
 returned accountId is printed — save it back into config.json for later runs.
