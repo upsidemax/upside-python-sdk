@@ -135,10 +135,14 @@ class Exchange(API):
             "reduce_only": reduce_only,
             "is_market": is_market,
         }
+        if price is None:
+            raise ValueError(
+                "price is required for every order. For a market order pass the "
+                "execution price you are willing to cross to, derived from the mark "
+                "price and your account's marketSlippageBps."
+            )
+        request["price"] = str(price)
         if not is_market:
-            if price is None:
-                raise ValueError("price is required for limit orders")
-            request["price"] = str(price)
             request["tif"] = tif
         if cloid is not None:
             request["cloid"] = cloid_str(cloid)
@@ -153,11 +157,23 @@ class Exchange(API):
         asset: int,
         is_buy: bool,
         size: Union[str, int],
+        price: Union[str, int],
         reduce_only: bool = False,
         cloid: Optional[Union[str, int, Cloid]] = None,
     ) -> Dict[str, Any]:
-        """Place a market order (fills at best price; no ``price``)."""
-        return self.order(asset, is_buy, size, reduce_only=reduce_only, cloid=cloid, is_market=True)
+        """Place a market order, executed immediately as IOC.
+
+        ``price`` is **required**: it is the execution price you are willing to
+        cross to, not a resting price. Derive it from the mark price and your
+        account's ``marketSlippageBps`` — the server does not compute one, and
+        an order without a positive price is rejected.
+
+        Market orders are not price-band checked, so a mistaken price can sweep
+        the book. Validate it before calling.
+        """
+        return self.order(
+            asset, is_buy, size, price=price, reduce_only=reduce_only, cloid=cloid, is_market=True
+        )
 
     def bulk_orders(self, orders: List[OrderRequest]) -> Dict[str, Any]:
         """Place up to 10 orders in one signed request.
@@ -272,23 +288,6 @@ class Exchange(API):
             action["isBuy"] = is_buy
         return self._post_dict(action)
 
-    def update_fee_setting(
-        self,
-        market_deployer_id: int,
-        taker_bps: Optional[int] = None,
-        maker_bps: Optional[int] = None,
-    ) -> Dict[str, Any]:
-        """Set per-user taker/maker fee overrides (bps). Omit a leg to clear it."""
-        action: Dict[str, Any] = {"type": "updateFeeSetting", "marketDeployerId": market_deployer_id}
-        if taker_bps is not None:
-            action["takerBps"] = taker_bps
-        if maker_bps is not None:
-            action["makerBps"] = maker_bps
-        return self._post_dict(action)
-
-    # ------------------------------------------------------------------ #
-    # Conditional orders (TP/SL)
-    # ------------------------------------------------------------------ #
     def tp_sl(
         self,
         asset: int,
@@ -409,12 +408,15 @@ def _order_to_wire(order: OrderRequest) -> Dict[str, Any]:
         "s": str(order["size"]),
         "r": bool(order.get("reduce_only", False)),
     }
+    if "price" not in order:
+        raise ValueError(
+            "price is required for every order, including market orders: the wire "
+            "protocol has no server-side price derivation"
+        )
+    wire["p"] = str(order["price"])
     if order.get("is_market"):
         wire["t"] = {"market": {}}
     else:
-        if "price" not in order:
-            raise ValueError("limit orders require a price")
-        wire["p"] = str(order["price"])
         wire["t"] = {"limit": {"tif": order.get("tif", constants.TIF_GTC)}}
     cloid = as_cloid_str(order.get("cloid"))
     if cloid is not None:

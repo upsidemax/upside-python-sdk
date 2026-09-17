@@ -73,7 +73,7 @@ info.share_group_state()
 from upside import Cloid
 
 exchange.order(asset=1, is_buy=True, size="10", price="50", cloid=Cloid.from_int(1001))
-exchange.market_order(asset=1, is_buy=False, size="5")
+exchange.market_order(asset=1, is_buy=False, size="5", price="61000")  # price = execution price to cross to
 exchange.bulk_orders([...])                     # up to 10 orders, one signature
 exchange.cancel(asset=1, oid=15)
 exchange.cancel_by_cloid(asset=1, cloid=1001)

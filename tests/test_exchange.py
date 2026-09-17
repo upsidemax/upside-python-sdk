@@ -42,11 +42,21 @@ def test_order_builds_limit_wire(exchange, fake_session):
     ]
 
 
-def test_market_order_omits_price(exchange, fake_session):
-    exchange.market_order(asset=2, is_buy=False, size="5")
+def test_market_order_carries_price(exchange, fake_session):
+    """A market order must send ``p``: the server derives no price of its own."""
+    exchange.market_order(asset=2, is_buy=False, size="5", price="61000")
     order = _action(fake_session)["orders"][0]
-    assert order == {"a": 2, "b": False, "s": "5", "r": False, "t": {"market": {}}}
-    assert "p" not in order
+    assert order == {"a": 2, "b": False, "s": "5", "r": False, "p": "61000", "t": {"market": {}}}
+
+
+def test_order_without_price_is_rejected_locally(exchange, fake_session):
+    """Catch the missing price before signing, not as a 400 from the server."""
+    import pytest
+
+    with pytest.raises(ValueError, match="price is required"):
+        exchange.order(asset=2, is_buy=True, size="5", is_market=True)
+    with pytest.raises(ValueError, match="price is required"):
+        exchange.order(asset=2, is_buy=True, size="5")
 
 
 def test_order_url_and_path(exchange, fake_session):
@@ -185,12 +195,13 @@ def test_revoke_agent(exchange, fake_session):
 def test_bulk_orders_multiple(exchange, fake_session):
     orders = [
         {"asset": 1, "is_buy": True, "size": "1", "price": "10"},
-        {"asset": 1, "is_buy": False, "size": "2", "is_market": True},
+        {"asset": 1, "is_buy": False, "size": "2", "price": "9", "is_market": True},
     ]
     exchange.bulk_orders(orders)  # type: ignore[arg-type]
     action = _action(fake_session)
     assert len(action["orders"]) == 2
     assert action["orders"][1]["t"] == {"market": {}}
+    assert action["orders"][1]["p"] == "9"   # market orders carry a price too
 
 
 def test_bulk_orders_builder_fields(exchange, fake_session):
@@ -226,13 +237,6 @@ def test_update_isolated_margin(exchange, fake_session):
     assert _action(fake_session) == {"type": "updateIsolatedMargin", "asset": 1, "ntli": 5000, "isBuy": True}
     exchange.update_isolated_margin(asset=1, ntli=-100)
     assert "isBuy" not in _action(fake_session)
-
-
-def test_update_fee_setting_omits_cleared_legs(exchange, fake_session):
-    exchange.update_fee_setting(1, taker_bps=5, maker_bps=-2)
-    assert _action(fake_session) == {"type": "updateFeeSetting", "marketDeployerId": 1, "takerBps": 5, "makerBps": -2}
-    exchange.update_fee_setting(1)
-    assert _action(fake_session) == {"type": "updateFeeSetting", "marketDeployerId": 1}
 
 
 def test_cancel_conditional_and_cancel_tp_sl(exchange, fake_session):

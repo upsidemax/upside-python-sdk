@@ -37,13 +37,14 @@ class OrderRequest(TypedDict):
 
     Prices and sizes are **raw integer strings** — scale them with the
     contract's ``priceScale`` / ``qtyScale`` from ``configs``. ``price`` is
-    required for limit orders and omitted for market orders (``is_market``).
+    **required for every order**: for a limit order it is the resting price, and
+    for a market order (``is_market``) the execution price to cross to.
     """
 
     asset: int
     is_buy: bool
     size: str
-    price: NotRequired[str]
+    price: str
     reduce_only: NotRequired[bool]
     tif: NotRequired[Tif]
     is_market: NotRequired[bool]
