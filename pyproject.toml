@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "upside-python-sdk"
-version = "0.1.0"
+version = "0.1.1"
 description = "Python SDK for the Upside perpetuals exchange (REST + WebSocket)."
 authors = ["Upside <dev@upsidemax.xyz>"]
 license = "MIT"
