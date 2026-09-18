@@ -17,7 +17,7 @@ the server byte-for-byte or recovery fails with ``SIGNATURE_INVALID``.
 import json
 import threading
 import time
-from typing import Any, Dict, Union, cast
+from typing import Any, Dict, Optional, Union, cast
 
 from eth_account import Account
 from eth_account.signers.local import LocalAccount
@@ -45,14 +45,20 @@ def _string(value: Any) -> bytes:
     return keccak(str(value).encode())
 
 
-# EIP-712 domain separator: Exchange / v1 / chainId 9767 / verifyingContract 0x0.
-_DOMAIN_SEPARATOR = keccak(
-    keccak(b"EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)")
-    + keccak(constants.DOMAIN_NAME.encode())
-    + keccak(constants.DOMAIN_VERSION.encode())
-    + _u(constants.CHAIN_ID)
-    + b"\x00" * 32
-)
+def _domain_separator(chain_id: int) -> bytes:
+    """EIP-712 domain: Exchange / v1 / ``chain_id`` / verifyingContract 0x0."""
+    return keccak(
+        keccak(b"EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)")
+        + keccak(constants.DOMAIN_NAME.encode())
+        + keccak(constants.DOMAIN_VERSION.encode())
+        + _u(chain_id)
+        + b"\x00" * 32
+    )
+
+
+# The default domain (chainId 9767), used by every Agent-path action and by
+# typed actions unless the caller overrides the chain id.
+_DOMAIN_SEPARATOR = _domain_separator(constants.CHAIN_ID)
 
 # Funds / permission actions sign a field-level typed struct. Field names match
 # the action's JSON keys, so encodings are derived straight from the type string.
@@ -77,6 +83,11 @@ _TYPED_DEFAULTS: Dict[str, Dict[str, Any]] = {
 }
 
 
+def is_typed_action(action_type: str) -> bool:
+    """Whether ``action_type`` signs a field-level typed struct (vs the Agent path)."""
+    return action_type in _TYPED
+
+
 def _encode_field(sol_type: str, value: Any) -> bytes:
     if sol_type == "address":
         return _addr(value)
@@ -97,24 +108,31 @@ def action_hash(action: Dict[str, Any], nonce: int) -> bytes:
     return keccak(canonical + int(nonce).to_bytes(8, "big"))
 
 
-def eip712_digest(action: Dict[str, Any], nonce: int) -> bytes:
+def eip712_digest(action: Dict[str, Any], nonce: int, signature_chain_id: Optional[int] = None) -> bytes:
     """Compute the 32-byte EIP-712 digest for an action.
 
     For typed actions this mutates ``action`` to fill required-but-optional
     fields (e.g. ``agentName``) so the sent JSON matches the signed struct.
+
+    ``signature_chain_id`` overrides the domain's chain id for **typed** actions
+    only (browser-extension wallets sign with their active chain); it must then
+    also travel in the envelope's top-level ``signatureChainId``. Agent-path
+    actions always use 9767 and ignore it.
     """
     type_str = _TYPED.get(action["type"])
     if type_str is not None:
         for key, default in _TYPED_DEFAULTS.get(action["type"], {}).items():
             action.setdefault(key, default)
         struct = _typed_struct(type_str, action, nonce)
+        domain = _DOMAIN_SEPARATOR if signature_chain_id is None else _domain_separator(signature_chain_id)
     else:
         struct = keccak(
             keccak(b"Agent(string source,bytes32 actionHash)")
             + keccak(constants.AGENT_SOURCE.encode())
             + action_hash(action, nonce)
         )
-    return keccak(b"\x19\x01" + _DOMAIN_SEPARATOR + struct)
+        domain = _DOMAIN_SEPARATOR
+    return keccak(b"\x19\x01" + domain + struct)
 
 
 def _sign_digest(wallet: Wallet, digest: bytes) -> Any:
@@ -123,12 +141,17 @@ def _sign_digest(wallet: Wallet, digest: bytes) -> Any:
     return signer(digest, wallet.key)
 
 
-def sign_action(wallet: Wallet, action: Dict[str, Any], nonce: int) -> Signature:
+def sign_action(
+    wallet: Wallet,
+    action: Dict[str, Any],
+    nonce: int,
+    signature_chain_id: Optional[int] = None,
+) -> Signature:
     """Return the ``{"r", "s", "v"}`` signature envelope for ``action``.
 
     ``r``/``s`` are ``0x``-prefixed lowercase 32-byte hex; ``v`` is 27 or 28.
     """
-    signed = _sign_digest(wallet, eip712_digest(action, nonce))
+    signed = _sign_digest(wallet, eip712_digest(action, nonce, signature_chain_id))
     return {
         "r": "0x" + int(signed.r).to_bytes(32, "big").hex(),
         "s": "0x" + int(signed.s).to_bytes(32, "big").hex(),
@@ -167,6 +190,7 @@ __all__ = [
     "NonceManager",
     "action_hash",
     "eip712_digest",
+    "is_typed_action",
     "sign_action",
     "to_wallet",
 ]

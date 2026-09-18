@@ -9,6 +9,7 @@ Numbers come back as **raw integer strings**; scale them with the contract's
 from typing import Any, Dict, List, Optional, Union
 
 from .api import API
+from .utils import constants
 from .utils.types import Json, Subscription
 from .websocket_manager import WebsocketManager, WsCallback
 
@@ -62,6 +63,17 @@ class Info(API):
             query["endTime"] = end_time
         return self._info(query)
 
+    def ticker(self, asset: Optional[Union[int, str]] = None) -> Dict[str, Any]:
+        """24h rolling stats: change, high/low, volume, funding, mark/oracle.
+
+        Omit ``asset`` for every contract that has traded. The window slides
+        over ``[now - 24h, now]``; it is not a calendar day.
+        """
+        query: Dict[str, Any] = {"type": "ticker"}
+        if asset is not None:
+            query["asset"] = str(asset)
+        return self._info(query)
+
     def share_group_state(self, group_id: int = 0) -> Dict[str, Any]:
         """Portfolio share-group definitions (membership, settle coin, status)."""
         return self._info({"type": "shareGroupState", "groupId": group_id})
@@ -79,6 +91,15 @@ class Info(API):
     def user_agents(self, account_id: Union[int, str]) -> Dict[str, Any]:
         """Authorized agent (API-wallet) slots for a master account."""
         return self._info({"type": "userAgents", "accountId": str(account_id)})
+
+    def account_by_address(self, address: str) -> Dict[str, Any]:
+        """Resolve a wallet address to an ``accountId``.
+
+        Works for a master address and for an agent address (which resolves to
+        the master it is bound to, with ``isAgent: true``). An unregistered
+        address comes back as ``accountId: "0"`` rather than an error.
+        """
+        return self._info({"type": "accountByAddress", "address": address.lower()})
 
     # -- orders -----------------------------------------------------------
     def user_orders(
@@ -122,6 +143,78 @@ class Info(API):
                 "cloids": [str(c) for c in cloids],
             }
         )
+
+    # -- history ----------------------------------------------------------
+    def user_fills(
+        self,
+        account_id: Union[int, str],
+        contract_id: int = 0,
+        start_time: Optional[int] = None,
+        end_time: Optional[int] = None,
+        limit: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Historical fills, one row per side the account was on.
+
+        Rows are ascending by ``timeMs``; page by passing the last row's
+        ``timeMs`` as the next ``start_time`` and de-duplicating on ``execId``
+        (the bound is inclusive). ``count == limit`` means there may be more.
+        """
+        return self._info(self._history_query("userFills", account_id, contract_id, start_time, end_time, limit))
+
+    def order_history(
+        self,
+        account_id: Union[int, str],
+        contract_id: int = 0,
+        start_time: Optional[int] = None,
+        end_time: Optional[int] = None,
+        limit: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Terminal orders (filled / canceled / rejected / triggered).
+
+        Resting and partially filled orders are **not** here — use
+        :meth:`user_orders`. Pagination matches :meth:`user_fills`, keyed on
+        ``updatedTimeMs`` / ``orderId``.
+        """
+        return self._info(self._history_query("orderHistory", account_id, contract_id, start_time, end_time, limit))
+
+    def user_funding_flows(
+        self,
+        account_id: Union[int, str],
+        contract_id: int = 0,
+        start_time: Optional[int] = None,
+        end_time: Optional[int] = None,
+        limit: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Per-position funding settlements. Pagination matches :meth:`user_fills`.
+
+        ``amount`` is signed (negative = paid). Reconcile across periods with
+        ``fundingIndexBefore`` / ``fundingIndexAfter``, not with ``fundingRate``
+        — the rate is only the most recent period's.
+        """
+        return self._info(self._history_query("userFundingFlows", account_id, contract_id, start_time, end_time, limit))
+
+    @staticmethod
+    def _history_query(
+        query_type: str,
+        account_id: Union[int, str],
+        contract_id: int,
+        start_time: Optional[int],
+        end_time: Optional[int],
+        limit: Optional[int],
+    ) -> Dict[str, Any]:
+        """Shared envelope for the three paginated history queries."""
+        if limit is not None and not 1 <= limit <= constants.MAX_HISTORY_LIMIT:
+            raise ValueError(f"limit must be 1..{constants.MAX_HISTORY_LIMIT}")
+        if start_time is not None and end_time is not None and start_time > end_time:
+            raise ValueError("start_time must not be after end_time")
+        query: Dict[str, Any] = {"type": query_type, "accountId": str(account_id), "contractId": contract_id}
+        if start_time is not None:
+            query["startTime"] = start_time
+        if end_time is not None:
+            query["endTime"] = end_time
+        if limit is not None:
+            query["limit"] = limit
+        return query
 
     # -- websocket facade -------------------------------------------------
     def subscribe(self, subscription: Subscription, callback: WsCallback) -> int:

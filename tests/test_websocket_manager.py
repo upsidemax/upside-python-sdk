@@ -160,3 +160,132 @@ def test_callback_exception_is_isolated():
     manager.subscribe({"type": "config"}, boom)
     # Must swallow the callback error rather than propagate.
     manager._on_message(None, '{"msg": "ConfigChanged", "channel": "config", "data": []}')
+
+
+@pytest.mark.parametrize(
+    "subscription,expected",
+    [
+        ({"type": "ticker", "asset": "10000001"}, "ticker:10000001"),
+        ({"type": "allMarkets"}, "allMarkets"),
+        ({"type": "userAccount", "user": "0xABC", "marketDeployerId": 1}, "userAccount:0xabc,1"),
+    ],
+)
+def test_subscription_to_identifier_new_channels(subscription, expected):
+    assert subscription_to_identifier(subscription) == expected
+
+
+@pytest.mark.parametrize(
+    "message,expected",
+    [
+        ({"msg": "Ticker", "channel": "ticker.10000001", "data": {"asset": "10000001"}}, "ticker:10000001"),
+        ({"msg": "AllMarkets", "channel": "allMarkets", "data": {"markets": []}}, "allMarkets"),
+        (
+            {"msg": "UserAccount", "channel": "userAccount.0xABC.1", "data": {}},
+            "userAccount:0xabc,1",
+        ),
+        (
+            # Some frames name only the address; the deployer is in the payload.
+            {"msg": "UserAccount", "channel": "userAccount.0xABC", "data": {"marketDeployerId": 1}},
+            "userAccount:0xabc,1",
+        ),
+    ],
+)
+def test_ws_message_to_identifier_new_channels(message, expected):
+    assert ws_message_to_identifier(message) == expected
+
+
+def test_candle_subscription_snapshot_frame_routes_like_the_increments():
+    """The first candle frame is a batch under long keys, not one bar under s/i."""
+    snapshot = {
+        "channel": "candle",
+        "isSnapshot": True,
+        "data": {"asset": "1", "interval": "1m", "candles": [{"t": 1, "closed": True}]},
+    }
+    increment = {"channel": "candle", "data": {"s": "1", "i": "1m", "closed": False}}
+    assert ws_message_to_identifier(snapshot) == ws_message_to_identifier(increment) == "candle:1,1m"
+    assert subscription_to_identifier({"type": "candle", "asset": "1", "interval": "1m"}) == "candle:1,1m"
+
+
+def test_user_account_subscription_is_per_deployer():
+    manager = WebsocketManager("https://dev.upsidemax.xyz")
+    sent = _stub(manager)
+    manager.ws_ready = True
+
+    first, second = [], []
+    manager.subscribe({"type": "userAccount", "user": "0xabc", "marketDeployerId": 1}, first.append)
+    manager.subscribe({"type": "userAccount", "user": "0xabc", "marketDeployerId": 2}, second.append)
+    assert len(sent) == 2  # same address, different deployer -> two subscriptions
+
+    manager._on_message(None, '{"msg":"UserAccount","channel":"userAccount.0xabc.2","data":{"crossEquity":"7"}}')
+    assert second and second[0]["data"]["crossEquity"] == "7"
+    assert first == []
+
+
+def test_ticker_and_all_markets_dispatch():
+    manager = WebsocketManager("https://dev.upsidemax.xyz")
+    _stub(manager)
+    manager.ws_ready = True
+
+    ticks, markets = [], []
+    manager.subscribe({"type": "ticker", "asset": "1"}, ticks.append)
+    manager.subscribe({"type": "allMarkets"}, markets.append)
+
+    manager._on_message(None, '{"msg":"Ticker","channel":"ticker.1","data":{"asset":"1","lastPx":"10"}}')
+    manager._on_message(None, '{"msg":"AllMarkets","channel":"allMarkets","data":{"ts":1,"markets":[]}}')
+    assert ticks and ticks[0]["data"]["lastPx"] == "10"
+    assert markets and markets[0]["data"]["markets"] == []
+
+
+def test_snapshot_frames_reach_private_channel_subscribers():
+    """orderUpdates / userFills open with a history snapshot under a different msg."""
+    manager = WebsocketManager("https://dev.upsidemax.xyz")
+    _stub(manager)
+    manager.ws_ready = True
+
+    orders, fills = [], []
+    manager.subscribe({"type": "orderUpdates", "user": "0xabc"}, orders.append)
+    manager.subscribe({"type": "userFills", "user": "0xabc"}, fills.append)
+
+    manager._on_message(
+        None,
+        '{"msg":"OrderHistorySnapshot","channel":"orderUpdates.0xabc",'
+        '"data":{"rows":[{"order_id":"1"}],"count":1,"truncated":false}}',
+    )
+    manager._on_message(
+        None,
+        '{"msg":"TradeFillHistorySnapshot","channel":"fills.0xabc",'
+        '"data":{"rows":[{"exec_id":"9"}],"count":1,"truncated":false}}',
+    )
+    assert orders and orders[0]["data"]["rows"][0]["order_id"] == "1"
+    assert fills and fills[0]["data"]["rows"][0]["exec_id"] == "9"
+
+
+@pytest.mark.parametrize(
+    "subscription,missing",
+    [
+        ({"type": "ticker"}, "asset"),
+        ({"type": "candle", "asset": "1"}, "interval"),
+        ({"type": "userAccount", "user": "0xabc"}, "marketDeployerId"),
+        ({"type": "orderUpdates"}, "user"),
+    ],
+)
+def test_missing_subscription_field_raises_websocket_error(subscription, missing):
+    """A missing required field is a subscription problem, not a stray KeyError."""
+    with pytest.raises(WebsocketError, match=missing):
+        subscription_to_identifier(subscription)
+
+
+def test_user_account_frame_without_a_deployer_still_dispatches():
+    """Neither channel nor payload names the deployer: fan out, don't drop."""
+    manager = WebsocketManager("https://dev.upsidemax.xyz")
+    _stub(manager)
+    manager.ws_ready = True
+
+    first, second, other = [], [], []
+    manager.subscribe({"type": "userAccount", "user": "0xabc", "marketDeployerId": 1}, first.append)
+    manager.subscribe({"type": "userAccount", "user": "0xabc", "marketDeployerId": 2}, second.append)
+    manager.subscribe({"type": "userAccount", "user": "0xdef", "marketDeployerId": 1}, other.append)
+
+    manager._on_message(None, '{"msg":"UserAccount","channel":"userAccount.0xabc","data":{"crossEquity":"7"}}')
+    assert len(first) == 1 and len(second) == 1
+    assert other == []  # a different address is still untouched

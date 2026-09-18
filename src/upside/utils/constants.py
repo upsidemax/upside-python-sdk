@@ -25,6 +25,33 @@ AGENT_SOURCE = "b"
 MAX_ORDERS_PER_REQUEST = 10
 MAX_CANCELS_PER_REQUEST = 10
 
+# Max rows per page for the history queries (userFills / orderHistory /
+# userFundingFlows); also their default. Asking for more is a 400.
+MAX_HISTORY_LIMIT = 1000
+
+# Trigger price feed for conditional orders and TP/SL. Only these two are
+# accepted -- LAST (2) is rejected with "invalid tp/sl trigger type".
+TRIGGER_TYPE_MARK = 0
+TRIGGER_TYPE_ORACLE = 1
+
+# Order type placed once a TP/SL leg triggers (tpOrderType / slOrderType).
+# Required whenever the matching trigger price is set.
+TPSL_ORDER_TYPE_LIMIT = 1
+TPSL_ORDER_TYPE_MARKET = 2
+
+# Direction of a trigger order / TP-SL leg (t.trigger.tpsl).
+TPSL_TAKE_PROFIT = "tp"
+TPSL_STOP_LOSS = "sl"
+
+# Account margin sharing mode (setMarginShareType).
+MARGIN_SHARE_UNIFIED = 0
+MARGIN_SHARE_PORTFOLIO = 1
+
+# Market-order slippage cap (updateSlippageSetting), in basis points. The
+# server defaults to 1000 (10%) and accepts (0, 10000].
+DEFAULT_MARKET_SLIPPAGE_BPS = 1000
+MAX_MARKET_SLIPPAGE_BPS = 10000
+
 # Candle intervals accepted by ``candleSnapshot`` and the ``candle`` WS channel.
 INTERVALS = (
     "1m",
@@ -48,3 +75,7 @@ TIF_GTC = "Gtc"
 TIF_IOC = "Ioc"
 TIF_ALO = "Alo"
 TIF_FOK = "Fok"
+
+# ``modify`` only accepts resting policies -- IOC/FOK never rest, so changing an
+# order into one is meaningless and rejected.
+MODIFY_TIFS = (TIF_GTC, TIF_ALO)

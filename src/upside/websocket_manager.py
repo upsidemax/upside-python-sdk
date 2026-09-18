@@ -33,17 +33,28 @@ _USER_CHANNEL_TO_TYPE = {
 }
 
 
+def _field(subscription: Subscription, name: str) -> Any:
+    """Read a subscription field the channel requires, or say which one is missing."""
+    try:
+        return subscription[name]  # type: ignore[literal-required]
+    except KeyError:
+        raise WebsocketError(f'subscription type {subscription["type"]!r} requires {name!r}') from None
+
+
 def subscription_to_identifier(subscription: Subscription) -> str:
     """Stable key for a subscription, matched against inbound messages."""
     sub_type = subscription["type"]
-    if sub_type in ("l2Book", "bbo", "trades"):
-        return f'{sub_type}:{subscription["asset"]}'
+    if sub_type in ("l2Book", "bbo", "trades", "ticker"):
+        return f'{sub_type}:{_field(subscription, "asset")}'
     if sub_type == "candle":
-        return f'candle:{subscription["asset"]},{subscription["interval"]}'
+        return f'candle:{_field(subscription, "asset")},{_field(subscription, "interval")}'
     if sub_type in ("orderUpdates", "openOrders", "userFills"):
-        return f'{sub_type}:{str(subscription["user"]).lower()}'
-    if sub_type == "config":
-        return "config"
+        return f'{sub_type}:{str(_field(subscription, "user")).lower()}'
+    if sub_type == "userAccount":
+        # The account view differs per market deployer, so both keys matter.
+        return f'userAccount:{str(_field(subscription, "user")).lower()},{_field(subscription, "marketDeployerId")}'
+    if sub_type in ("config", "allMarkets"):
+        return sub_type
     raise WebsocketError(f"unknown subscription type: {sub_type}")
 
 
@@ -60,15 +71,31 @@ def ws_message_to_identifier(message: Dict[str, Any]) -> Optional[str]:
         first = data[0] if isinstance(data, list) and data else {}
         return f'trades:{first.get("asset")}'
     if channel == "candle":
+        # The subscription snapshot frame ("isSnapshot": true) carries a batch
+        # keyed by the long names; every later incremental frame is one candle
+        # under the compact ones.
+        if isinstance(data, dict) and "candles" in data:
+            return f'candle:{data.get("asset")},{data.get("interval")}'
         return f'candle:{data.get("s")},{data.get("i")}'
-    if channel == "config":
-        return "config"
+    if channel in ("config", "allMarkets"):
+        return str(channel)
 
-    # User channels arrive as "<base>.<address>" (e.g. "fills.0xabc").
-    base, _, addr = channel.partition(".")
+    # Everything else arrives as "<base>.<suffix>" (e.g. "fills.0xabc",
+    # "ticker.1", "userAccount.0xabc.1").
+    base, _, suffix = channel.partition(".")
     sub_type = _USER_CHANNEL_TO_TYPE.get(base)
     if sub_type is not None:
-        return f"{sub_type}:{addr.lower()}"
+        return f"{sub_type}:{suffix.lower()}"
+    if base == "ticker":
+        return f"ticker:{suffix}"
+    if base == "userAccount":
+        addr, _, deployer = suffix.partition(".")
+        if not deployer and isinstance(data, dict):
+            # Some frames name only the address; the deployer is in the payload.
+            deployer = str(data.get("marketDeployerId", ""))
+        # With neither, this ends in "," and matches no exact key -- dispatch
+        # treats that as "every deployer subscribed for this address".
+        return f"userAccount:{addr.lower()},{deployer}"
     return None
 
 
@@ -179,7 +206,9 @@ class WebsocketManager(threading.Thread):
         if identifier is None:
             return
         with self._lock:
-            callbacks = [e.callback for e in self._active.get(identifier, [])]
+            callbacks = self._callbacks_for(identifier)
+        if not callbacks:
+            self._logger.debug("no subscriber for ws frame %s", identifier)
         for callback in callbacks:
             try:
                 callback(message)
@@ -195,5 +224,17 @@ class WebsocketManager(threading.Thread):
             self.ws_ready = False
 
     # -- internals --------------------------------------------------------
+    def _callbacks_for(self, identifier: str) -> List[WsCallback]:
+        """Callbacks registered for ``identifier``. Call with the lock held.
+
+        A ``userAccount`` frame that names neither a market deployer in its
+        channel nor one in its payload yields a key ending in ``","``; rather
+        than drop it, hand it to every deployer subscribed for that address.
+        """
+        entries = self._active.get(identifier)
+        if entries is None and identifier.endswith(","):
+            return [e.callback for key, v in self._active.items() if key.startswith(identifier) for e in v]
+        return [e.callback for e in entries or []]
+
     def _send(self, payload: Dict[str, Any]) -> None:
         self.ws.send(json.dumps(payload))

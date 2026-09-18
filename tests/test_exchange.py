@@ -116,12 +116,24 @@ def test_update_margin_mode_omits_hedge_when_none(exchange, fake_session):
 
 
 def test_tp_sl_wire_defaults(exchange, fake_session):
-    exchange.tp_sl(asset=1, tp_price="90000", sl_price="80000")
+    exchange.tp_sl(
+        asset=1,
+        tp_price="90000",
+        tp_limit_price="90000",
+        tp_order_type=1,
+        sl_price="80000",
+        sl_limit_price="80000",
+        sl_order_type=2,
+    )
     action = _action(fake_session)
     assert action["type"] == "tpSl"
     assert action["a"] == 1
     assert action["tpPrice"] == "90000" and action["slPrice"] == "80000"
     assert action["isPositionTpsl"] is True
+    # Both legs carry the order type the server has required since 2026-09-11.
+    assert action["tpOrderType"] == 1 and action["slOrderType"] == 2
+    assert action["positionSide"] == 0 and action["reduceOnly"] is False
+    assert action["tpSize"] == "0" and action["tpTriggerType"] == 0
 
 
 def test_register_account_puts_invite_code_at_top_level(exchange, fake_session):
@@ -201,7 +213,7 @@ def test_bulk_orders_multiple(exchange, fake_session):
     action = _action(fake_session)
     assert len(action["orders"]) == 2
     assert action["orders"][1]["t"] == {"market": {}}
-    assert action["orders"][1]["p"] == "9"   # market orders carry a price too
+    assert action["orders"][1]["p"] == "9"  # market orders carry a price too
 
 
 def test_bulk_orders_builder_fields(exchange, fake_session):
@@ -247,8 +259,256 @@ def test_cancel_conditional_and_cancel_tp_sl(exchange, fake_session):
 
 
 def test_tp_sl_standalone_includes_order_side(exchange, fake_session):
-    exchange.tp_sl(asset=1, sl_price="80000", is_position_tpsl=False, order_side="S")
-    assert _action(fake_session)["orderSide"] == "S"
+    exchange.tp_sl(
+        asset=1,
+        sl_price="80000",
+        sl_limit_price="79000",
+        sl_order_type=2,
+        is_position_tpsl=False,
+        order_side="S",
+    )
+    action = _action(fake_session)
+    assert action["orderSide"] == "S"
+    assert action["isPositionTpsl"] is False
+    # The unset leg still ships, zeroed.
+    assert action["tpPrice"] == "0" and action["tpOrderType"] == 0
+
+
+def test_tp_sl_requires_order_type_for_a_set_leg(exchange):
+    with pytest.raises(ValueError, match="tp_order_type is required"):
+        exchange.tp_sl(asset=1, tp_price="90000", tp_limit_price="90000")
+
+
+def test_tp_sl_requires_limit_price_for_a_set_leg(exchange):
+    """Market TP/SL stopped meaning "limit price 0" on 2026-09-11."""
+    with pytest.raises(ValueError, match="sl_limit_price must be > 0"):
+        exchange.tp_sl(asset=1, sl_price="80000", sl_order_type=2)
+
+
+def test_tp_sl_rejects_order_type_without_trigger(exchange):
+    with pytest.raises(ValueError, match="tp_order_type without tp_price"):
+        exchange.tp_sl(asset=1, sl_price="1", sl_limit_price="1", sl_order_type=1, tp_order_type=1)
+
+
+def test_tp_sl_requires_at_least_one_leg(exchange):
+    with pytest.raises(ValueError, match="set tp_price or sl_price"):
+        exchange.tp_sl(asset=1)
+
+
+def test_update_leverage_wire(exchange, fake_session):
+    exchange.update_leverage(asset=1, leverage=20)
+    assert _action(fake_session) == {"type": "updateLeverage", "a": 1, "leverage": 20}
+
+
+def test_update_slippage_setting_wire(exchange, fake_session):
+    exchange.update_slippage_setting(market_deployer_id=1, market_slippage_bps=500)
+    assert _action(fake_session) == {
+        "type": "updateSlippageSetting",
+        "marketDeployerId": 1,
+        "marketSlippageBps": 500,
+    }
+
+
+@pytest.mark.parametrize("bps", [0, -1, 10001])
+def test_update_slippage_setting_rejects_out_of_range(exchange, bps):
+    with pytest.raises(ValueError, match=r"\(0, 10000\]"):
+        exchange.update_slippage_setting(market_deployer_id=1, market_slippage_bps=bps)
+
+
+def test_set_margin_share_type_wire(exchange, fake_session):
+    exchange.set_margin_share_type(1)
+    assert _action(fake_session) == {"type": "setMarginShareType", "marginShareType": 1}
+
+
+@pytest.mark.parametrize(
+    "call,expected",
+    [
+        (
+            lambda ex: ex.transfer_md_to_share_group(1, 3, 1, "1000"),
+            {
+                "type": "transferMdToShareGroup",
+                "marketDeployerId": 1,
+                "groupId": 3,
+                "coinId": 1,
+                "amount": "1000",
+            },
+        ),
+        (
+            lambda ex: ex.transfer_share_group_to_md(3, 1, 1, 1000),
+            {
+                "type": "transferShareGroupToMd",
+                "groupId": 3,
+                "marketDeployerId": 1,
+                "coinId": 1,
+                "amount": "1000",
+            },
+        ),
+        (
+            lambda ex: ex.lock_into_share_group(3, 1, "1000"),
+            {"type": "lockIntoShareGroup", "groupId": 3, "coinId": 1, "amount": "1000"},
+        ),
+        (
+            lambda ex: ex.unlock_from_share_group(3, 1, "1000"),
+            {"type": "unlockFromShareGroup", "groupId": 3, "coinId": 1, "amount": "1000"},
+        ),
+    ],
+)
+def test_share_group_transfer_wire(exchange, fake_session, call, expected):
+    call(exchange)
+    assert _action(fake_session) == expected
+
+
+def test_trigger_order_wire(exchange, fake_session):
+    exchange.trigger_order(
+        asset=1, is_buy=False, size="10", price="79000", trigger_px="80000", tpsl="sl", reduce_only=True
+    )
+    order = _action(fake_session)["orders"][0]
+    assert order == {
+        "a": 1,
+        "b": False,
+        "s": "10",
+        "r": True,
+        "p": "79000",
+        "t": {"trigger": {"triggerPx": "80000", "isMarket": True, "tpsl": "sl"}},
+    }
+
+
+def test_trigger_order_limit_variant(exchange, fake_session):
+    exchange.trigger_order(asset=1, is_buy=True, size="1", price="100", trigger_px="99", tpsl="tp", is_market=False)
+    assert _action(fake_session)["orders"][0]["t"]["trigger"]["isMarket"] is False
+
+
+def test_trigger_order_requires_direction(exchange):
+    from upside.exchange import _order_to_wire
+
+    with pytest.raises(ValueError, match="trigger_tpsl must be"):
+        _order_to_wire({"asset": 1, "is_buy": True, "size": "1", "price": "1", "trigger_px": "2"})
+
+
+def test_order_with_inline_tp_sl(exchange, fake_session):
+    exchange.order(
+        asset=1,
+        is_buy=True,
+        size="10",
+        price="100",
+        tp_price="120",
+        tp_limit_price="119",
+        tp_order_type=1,
+        sl_price="90",
+        sl_limit_price="89",
+        sl_order_type=2,
+        sl_size="5",
+        sl_trigger_type=1,
+    )
+    order = _action(fake_session)["orders"][0]
+    assert order["tpPrice"] == "120" and order["tpLimitPrice"] == "119" and order["tpOrderType"] == 1
+    assert order["tpSize"] == "0" and order["tpTriggerType"] == 0  # 0 = close the whole position, mark price
+    assert order["slPrice"] == "90" and order["slOrderType"] == 2
+    assert order["slSize"] == "5" and order["slTriggerType"] == 1
+
+
+def test_inline_tp_sl_requires_order_type(exchange):
+    with pytest.raises(ValueError, match="tp_order_type is required"):
+        exchange.order(asset=1, is_buy=True, size="1", price="100", tp_price="120", tp_limit_price="119")
+
+
+def test_inline_tp_sl_rejected_on_reduce_only_order(exchange):
+    from upside.exchange import _order_to_wire
+
+    with pytest.raises(ValueError, match="reduce-only order cannot carry inline TP/SL"):
+        _order_to_wire(
+            {
+                "asset": 1,
+                "is_buy": False,
+                "size": "1",
+                "price": "100",
+                "reduce_only": True,
+                "tp_price": "120",
+                "tp_limit_price": "119",
+                "tp_order_type": 1,
+            }
+        )
+
+
+def test_inline_tp_sl_rejected_on_trigger_order(exchange):
+    from upside.exchange import _order_to_wire
+
+    with pytest.raises(ValueError, match="trigger order cannot carry inline TP/SL"):
+        _order_to_wire(
+            {
+                "asset": 1,
+                "is_buy": True,
+                "size": "1",
+                "price": "100",
+                "trigger_px": "99",
+                "trigger_tpsl": "sl",
+                "tp_price": "120",
+                "tp_limit_price": "119",
+                "tp_order_type": 1,
+            }
+        )
+
+
+def test_batch_rejects_trigger_and_inline_tpsl(exchange):
+    """Both are single-order-only server side: a batch rejects or drops them."""
+    with pytest.raises(ValueError, match="trigger order must be sent on its own"):
+        exchange.bulk_orders(
+            [
+                {"asset": 1, "is_buy": True, "size": "1", "price": "1"},
+                {"asset": 1, "is_buy": True, "size": "1", "price": "1", "trigger_px": "2", "trigger_tpsl": "sl"},
+            ]  # type: ignore[arg-type]
+        )
+    with pytest.raises(ValueError, match="inline TP/SL is ignored in a batch"):
+        exchange.bulk_orders(
+            [
+                {"asset": 1, "is_buy": True, "size": "1", "price": "1"},
+                {"asset": 1, "is_buy": True, "size": "1", "price": "1", "tp_price": "2"},
+            ]  # type: ignore[arg-type]
+        )
+
+
+@pytest.mark.parametrize("tif", ["Ioc", "Fok"])
+def test_modify_rejects_non_resting_tif(exchange, tif):
+    with pytest.raises(ValueError, match="resting tif only"):
+        exchange.modify(asset=1, oid=1, tif=tif)  # type: ignore[arg-type]
+
+
+def test_signature_chain_id_travels_unsigned_at_top_level(fake_session):
+    """Browser-wallet path: typed digest uses the override, Agent path ignores it."""
+    from upside.utils import signing
+
+    ex = Exchange(PRIVATE_KEY, base_url="https://dev.upsidemax.xyz", signature_chain_id=1)
+    ex.session = fake_session
+
+    ex.register_account()
+    env = fake_session.last["json"]
+    assert env["signatureChainId"] == "0x1"
+    assert "signatureChainId" not in env["action"]
+    digest = signing.eip712_digest(env["action"], env["nonce"], 1)
+    sig = env["signature"]
+    assert Account._recover_hash(digest, vrs=(sig["v"], int(sig["r"], 16), int(sig["s"], 16))).lower() == ADDRESS
+
+    ex.cancel_all(1)
+    env = fake_session.last["json"]
+    digest = signing.eip712_digest(env["action"], env["nonce"])  # Agent path: always 9767
+    sig = env["signature"]
+    assert Account._recover_hash(digest, vrs=(sig["v"], int(sig["r"], 16), int(sig["s"], 16))).lower() == ADDRESS
+
+
+def test_invalid_param_errors_are_exposed(exchange, fake_session):
+    fake_session.queue(
+        {
+            "status": "error",
+            "code": "INVALID_PARAM",
+            "message": "s OUT_OF_RANGE",
+            "errors": [{"field": "s", "reason": "OUT_OF_RANGE", "expected": "> 0"}],
+        },
+        400,
+    )
+    with pytest.raises(ClientError) as exc:
+        exchange.order(asset=1, is_buy=True, size="0", price="1")
+    assert exc.value.errors == [{"field": "s", "reason": "OUT_OF_RANGE", "expected": "> 0"}]
+    assert "OUT_OF_RANGE" in str(exc.value)
 
 
 @pytest.mark.parametrize(
@@ -303,3 +563,40 @@ def test_custom_nonce_manager_is_used(fake_session):
     ex.session = fake_session
     ex.cancel_all(1)
     assert fake_session.last["json"]["nonce"] == 42
+
+
+@pytest.mark.parametrize("price", [0, "0", "-5"])
+def test_order_rejects_non_positive_price(exchange, price):
+    """p must be > 0; a market order is not price-band checked, so 0 would sweep."""
+    with pytest.raises(ValueError, match="price must be a positive"):
+        exchange.order(asset=1, is_buy=False, size="5", price=price)
+
+
+@pytest.mark.parametrize("price", ["abc", "", "1.5"])
+def test_order_rejects_non_integer_price(exchange, price):
+    """Prices are raw integers; a decimal string means an unscaled value."""
+    with pytest.raises(ValueError, match="raw integer string"):
+        exchange.order(asset=1, is_buy=False, size="5", price=price)
+
+
+def test_batch_allows_zeroed_tpsl_legs(exchange, fake_session):
+    """ "0" is the not-set convention, so a zeroed leg must not trip the guard."""
+    exchange.bulk_orders(
+        [
+            {"asset": 1, "is_buy": True, "size": "1", "price": "1", "tp_price": "0", "sl_price": "0"},
+            {"asset": 1, "is_buy": False, "size": "1", "price": "2"},
+        ]  # type: ignore[arg-type]
+    )
+    orders = _action(fake_session)["orders"]
+    assert len(orders) == 2
+    assert "tpPrice" not in orders[0]
+
+
+def test_signature_chain_id_is_omitted_on_agent_path_actions(fake_session):
+    """Agent-path actions always sign over 9767; announcing another chain would lie."""
+    ex = Exchange(PRIVATE_KEY, base_url="https://dev.upsidemax.xyz", signature_chain_id=1)
+    ex.session = fake_session
+    ex.order(asset=1, is_buy=True, size="1", price="1")
+    assert "signatureChainId" not in fake_session.last["json"]
+    ex.revoke_agent("0x" + "cd" * 20)  # typed path
+    assert fake_session.last["json"]["signatureChainId"] == "0x1"

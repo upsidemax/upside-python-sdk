@@ -47,15 +47,22 @@ class API:
             return cast(Json, body)
 
         code = message = request_id = None
+        errors = None
         if isinstance(body, dict):
             code = body.get("code")
             message = body.get("message")
             request_id = body.get("requestId")
+            raw_errors = body.get("errors")
+            # Field-level detail, sent with INVALID_PARAM rejections. Keep only
+            # the object entries: a bare string here must not cost the caller
+            # the whole error envelope.
+            if isinstance(raw_errors, list):
+                errors = [e for e in raw_errors if isinstance(e, dict)]
         else:
             message = response.text[:500] or None
 
         error_cls = ClientError if 400 <= response.status_code < 500 else ServerError
-        raise error_cls(response.status_code, code=code, message=message, request_id=request_id)
+        raise error_cls(response.status_code, code=code, message=message, request_id=request_id, errors=errors)
 
     def close(self) -> None:
         self.session.close()
