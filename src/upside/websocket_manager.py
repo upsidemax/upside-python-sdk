@@ -13,10 +13,11 @@ import json
 import logging
 import threading
 from collections import defaultdict
-from typing import Any, Callable, Dict, List, NamedTuple, Optional
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, cast
 
 import websocket
 
+from .utils.constants import INTERVALS
 from .utils.error import WebsocketError
 from .utils.types import Json, Subscription
 
@@ -31,6 +32,22 @@ _USER_CHANNEL_TO_TYPE = {
     "openOrders": "openOrders",
     "fills": "userFills",
 }
+
+
+def normalize_subscription(subscription: Subscription) -> Subscription:
+    """The wire form of ``subscription``: string ``asset``, lowercase ``user``, int ``group``."""
+    normalized: Dict[str, Any] = dict(subscription)
+    if "asset" in normalized and not isinstance(normalized["asset"], bool):
+        normalized["asset"] = str(normalized["asset"])
+    if isinstance(normalized.get("user"), str):
+        normalized["user"] = normalized["user"].lower()
+    if normalized.get("group") is not None:
+        normalized["group"] = int(normalized["group"])
+    if normalized.get("type") == "candle" and normalized.get("interval") not in INTERVALS:
+        raise WebsocketError(
+            f"candle interval must be one of {', '.join(INTERVALS)}, got {normalized.get('interval')!r}"
+        )
+    return cast(Subscription, normalized)
 
 
 def _field(subscription: Subscription, name: str) -> Any:
@@ -79,12 +96,13 @@ def ws_message_to_identifier(message: Dict[str, Any]) -> Optional[str]:
     if channel == "bbo":
         return f'bbo:{data.get("asset")}'
     if channel == "trades":
+        # An empty subscription snapshot names no asset and cannot be routed;
+        # it carries nothing either.
         first = data[0] if isinstance(data, list) and data else {}
-        return f'trades:{first.get("asset")}'
+        return f'trades:{first.get("asset")}' if first else None
     if channel == "candle":
-        # The subscription snapshot frame ("isSnapshot": true) carries a batch
-        # keyed by the long names; every later incremental frame is one candle
-        # under the compact ones.
+        # Every frame is one candle under the compact keys. The batch form
+        # (long keys) is from an older server that sent a subscription snapshot.
         if isinstance(data, dict) and "candles" in data:
             return f'candle:{data.get("asset")},{data.get("interval")}'
         return f'candle:{data.get("s")},{data.get("i")}'
@@ -120,10 +138,30 @@ class _ActiveSubscription(NamedTuple):
 
 
 class WebsocketManager(threading.Thread):
-    """Background WebSocket connection with subscribe/dispatch/reconnect."""
+    """Background WebSocket connection with subscribe/dispatch/reconnect.
 
-    def __init__(self, base_url: str, ping_interval: int = 30, user_agent: str = "upside-python-sdk") -> None:
+    Callbacks run on the connection's reader thread: keep them short (a callback
+    blocking past the pong timeout makes the client reconnect).
+
+    The server answers a refused subscription with an ``error`` frame that does
+    not say which subscription it refers to, so it cannot reach a subscription
+    callback; ``error_callback`` receives those frames, and ``AuthResult``
+    frames with ``success: false``. Subscription fields are normalized before
+    sending (``asset`` as a decimal string, ``user`` lowercase, ``group`` as an
+    int) because the server refuses a numeric ``asset``.
+    """
+
+    def __init__(
+        self,
+        base_url: str,
+        ping_interval: int = 30,
+        user_agent: str = "upside-python-sdk",
+        error_callback: Optional[WsCallback] = None,
+    ) -> None:
         super().__init__(daemon=True)
+        if ping_interval <= 10:
+            raise ValueError("ping_interval must be > 10 seconds (the pong timeout is ping_interval - 5)")
+        self.error_callback = error_callback
         # http(s)://host  ->  ws(s)://host/ws
         self.ws_url = "ws" + base_url.rstrip("/")[len("http") :] + "/ws"
         self.ping_interval = ping_interval
@@ -164,7 +202,11 @@ class WebsocketManager(threading.Thread):
             self._send({"msg": "Auth", "accountId": account_id})
 
     def subscribe(self, subscription: Subscription, callback: WsCallback) -> int:
-        """Register ``callback`` for ``subscription`` and return a subscription id."""
+        """Register ``callback`` for ``subscription`` and return a subscription id.
+
+        Safe to call while disconnected: the subscription is sent on (re)connect.
+        """
+        subscription = normalize_subscription(subscription)
         identifier = subscription_to_identifier(subscription)
         with self._lock:
             self._id_counter += 1
@@ -179,6 +221,7 @@ class WebsocketManager(threading.Thread):
 
     def unsubscribe(self, subscription: Subscription, subscription_id: int) -> bool:
         """Remove one callback; send ``unsubscribe`` when the last one is gone."""
+        subscription = normalize_subscription(subscription)
         identifier = subscription_to_identifier(subscription)
         with self._lock:
             entries = self._active.get(identifier, [])
@@ -213,8 +256,14 @@ class WebsocketManager(threading.Thread):
         if not isinstance(message, dict):
             return
 
-        if message.get("channel") == "error":
-            self._logger.warning("ws subscription error: %s", message.get("data"))
+        if message.get("channel") == "error" or (message.get("msg") == "AuthResult" and not message.get("success")):
+            self._logger.warning("ws error: %s", message)
+            if self.error_callback is not None:
+                try:
+                    self.error_callback(message)
+                except Exception:  # pragma: no cover - user callback error
+                    self._logger.exception("error in ws error callback")
+            return
 
         identifier = ws_message_to_identifier(message)
         if identifier is None:
@@ -235,7 +284,11 @@ class WebsocketManager(threading.Thread):
                 self._logger.exception("error in ws callback for %s", identifier)
 
     def _on_error(self, _ws: Any, error: Any) -> None:
+        # With auto-reconnect, websocket-client reports a dropped connection
+        # here without calling on_close; stop sending until on_open fires again.
         self._logger.warning("websocket error: %s", error)
+        with self._lock:
+            self.ws_ready = False
 
     def _on_close(self, _ws: Any, status_code: Any, msg: Any) -> None:
         self._logger.debug("websocket closed: %s %s", status_code, msg)
@@ -256,4 +309,9 @@ class WebsocketManager(threading.Thread):
         return [e.callback for e in entries or []]
 
     def _send(self, payload: Dict[str, Any]) -> None:
-        self.ws.send(json.dumps(payload))
+        """Send now, or leave it to the replay in ``_on_open`` if the socket is gone."""
+        try:
+            self.ws.send(json.dumps(payload))
+        except websocket.WebSocketConnectionClosedException:
+            self.ws_ready = False
+            self._logger.debug("socket closed; %s will be replayed on reconnect", payload.get("method", "frame"))

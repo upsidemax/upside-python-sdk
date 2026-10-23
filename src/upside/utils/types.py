@@ -90,10 +90,10 @@ class OrderRequest(TypedDict):
 
 
 class CancelRequest(TypedDict):
-    """A single cancel-by-order-id entry."""
+    """A single cancel-by-order-id entry. ``oid`` may be the string ``/info`` returns."""
 
     asset: int
-    oid: int
+    oid: Union[int, str]
 
 
 class CancelByCloidRequest(TypedDict):

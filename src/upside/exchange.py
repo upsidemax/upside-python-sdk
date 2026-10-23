@@ -10,16 +10,22 @@ The order and cancel family (``order`` / ``cancel`` / ``cancelByCloid`` /
 ``cancelAll`` / ``modify``) has two receipt shapes, chosen per request by the
 envelope's ``sync`` flag (unsigned; see the ``sync`` argument):
 
-* ``sync=True`` — HTTP 200 once the action has executed on chain. ``order`` /
-  ``cancel`` / ``cancelByCloid`` / ``modify`` carry ``response.data.statuses[]``,
-  one entry per submitted item in request order (``modify`` always exactly one):
+* ``sync=True`` — HTTP 200 once the action has executed on chain, with
+  ``response.data.statuses[]`` holding one entry per submitted item in request
+  order. ``order`` / ``modify`` (``modify``: exactly one) entries are
   ``{"resting": {"oid"}}``, ``{"filled": {"totalSz", "avgPx", "oid"}}`` or
-  ``{"error": "..."}``. ``cancelAll`` carries
-  ``{"limitCancelled": n, "conditionalCancelled": m}`` and **no** ``statuses``.
+  ``{"error": "..."}``; ``cancel`` / ``cancelByCloid`` entries are the string
+  ``"success"`` or ``{"error": "..."}``. ``cancelAll`` carries
+  ``{"limitCancelled": n, "conditionalCancelled": m}`` and **no** ``statuses``;
+  a trigger order carries the TP/SL receipt (see :meth:`Exchange.trigger_order`).
+  A malformed request is refused up front with ``400 INVALID_PARAM``.
 * ``sync=False`` — HTTP 202 as soon as the gateway accepts it:
   ``{"status": "accepted", "response": {"type": "accepted", "data": {"count": 1}}}``.
   The per-item outcome arrives on the ``orderUpdates`` WebSocket channel,
   correlated by ``cloid`` or by ``n`` (your nonce) + ``si`` (index in the batch).
+  The gateway does **not** validate parameters on this path: a request the
+  chain cannot parse is dropped with no ``orderUpdates`` entry at all. This SDK
+  checks every field it sends before signing for that reason.
 * omitted (``None``, the default) — the deployment's default, currently 202.
 
 A synchronous request that is not answered within 2 s returns
@@ -99,14 +105,25 @@ class Exchange(API):
         self,
         invite_code: Optional[str] = None,
         address: Optional[str] = None,
+        market_deployer_id: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Register the wallet and receive an ``accountId`` (typed path).
 
         ``invite_code`` is required in gated environments (Devnet) and is sent
-        unsigned at the envelope top level. On Devnet a successful registration
-        triggers a 10,000 USDC test airdrop within ~10s.
+        unsigned at the envelope top level. ``market_deployer_id`` enrolls the
+        new account in that market deployer in the same step (``0`` = register
+        only); omitted, the server enrolls it in its default deployer. On Devnet
+        a successful registration is followed by a test airdrop into the enrolled
+        deployer — wait for this call's 200 before expecting it.
+
+        ``address`` must be this wallet's own address (the server requires the
+        signer to match); it is accepted only for explicitness.
         """
-        action = {"type": "registerAccount", "address": (address or self.address).lower()}
+        if address is not None and address.lower() != self.address:
+            raise ValueError("address must be the signing wallet's own address")
+        action: Dict[str, Any] = {"type": "registerAccount", "address": self.address}
+        if market_deployer_id is not None:
+            action["marketDeployerId"] = _non_negative_int("market_deployer_id", market_deployer_id)
         extra = {"inviteCode": invite_code} if invite_code is not None else None
         result = self._post_action(action, extra)
         if isinstance(result, dict):
@@ -131,6 +148,11 @@ class Exchange(API):
         tuple is ``(response, agent_private_key)`` so you can construct an agent
         :class:`Exchange`. When an address is supplied, the second element is
         ``None``. ``valid_until`` is Unix ms (``0`` = permanent).
+
+        An account holds one unnamed agent and up to three named ones. Approving
+        with the same name — including the empty name — **replaces** the agent in
+        that slot. Names are compared on their first 16 bytes, so longer names
+        sharing a 16-byte prefix replace each other.
         """
         agent_key: Optional[str] = None
         if agent_address is None:
@@ -224,6 +246,16 @@ class Exchange(API):
         reduce_only: bool = False,
         cloid: Optional[Union[str, int, Cloid]] = None,
         sync: Optional[bool] = None,
+        tp_price: Optional[Union[str, int]] = None,
+        tp_limit_price: Optional[Union[str, int]] = None,
+        tp_size: Optional[Union[str, int]] = None,
+        tp_trigger_type: TriggerType = 0,
+        tp_order_type: Optional[TpSlOrderType] = None,
+        sl_price: Optional[Union[str, int]] = None,
+        sl_limit_price: Optional[Union[str, int]] = None,
+        sl_size: Optional[Union[str, int]] = None,
+        sl_trigger_type: TriggerType = 0,
+        sl_order_type: Optional[TpSlOrderType] = None,
     ) -> Dict[str, Any]:
         """Place a conditional order that fires when the mark price crosses ``trigger_px``.
 
@@ -233,8 +265,12 @@ class Exchange(API):
         required, as the execution price to cross to or the resting price.
         ``reduce_only=True`` makes it a closing order.
 
-        Trigger orders must be sent alone (a batch containing one is rejected)
-        and answer with the TP/SL receipt shape
+        ``tp_*`` / ``sl_*`` attach a take-profit / stop-loss to the order placed
+        **when this one fires** (same rules as on :meth:`order`); they are not
+        this order's own trigger.
+
+        Trigger orders must be sent alone. With ``sync=True`` they answer with
+        the TP/SL receipt shape
         ``{"response": {"type": "tpSl", "data": {"tpOrderId": n, "slOrderId": n}}}``
         — the id lands in the leg matching ``tpsl``, the other is ``0``. Cancel
         one with :meth:`cancel_conditional`.
@@ -251,6 +287,8 @@ class Exchange(API):
         }
         if cloid is not None:
             request["cloid"] = cloid_str(cloid)
+        _put_tpsl_leg(request, "tp", tp_price, tp_limit_price, tp_size, tp_trigger_type, tp_order_type)
+        _put_tpsl_leg(request, "sl", sl_price, sl_limit_price, sl_size, sl_trigger_type, sl_order_type)
         return self.bulk_orders([request], sync=sync)
 
     def market_order(
@@ -286,8 +324,8 @@ class Exchange(API):
         if not 1 <= len(orders) <= constants.MAX_ORDERS_PER_REQUEST:
             raise ValueError(f"orders must contain 1..{constants.MAX_ORDERS_PER_REQUEST} items")
         if len(orders) > 1:
-            # The server rejects a batch containing a trigger order outright and
-            # silently drops inline TP/SL from a batch -- fail here instead.
+            # A batch containing a trigger order is refused (sync) or dropped
+            # (async), and inline TP/SL is ignored in a batch -- fail here instead.
             for index, order in enumerate(orders):
                 if "trigger_px" in order:
                     raise ValueError(f"orders[{index}]: a trigger order must be sent on its own")
@@ -302,15 +340,21 @@ class Exchange(API):
         }
         return self._post_order_family(action, sync)
 
-    def cancel(self, asset: int, oid: int, sync: Optional[bool] = None) -> Dict[str, Any]:
-        """Cancel one resting order by exchange order id."""
+    def cancel(self, asset: int, oid: Union[int, str], sync: Optional[bool] = None) -> Dict[str, Any]:
+        """Cancel one resting order by exchange order id.
+
+        ``oid`` may be the string form ``/info`` returns; it is sent as a number.
+        """
         return self.bulk_cancel([{"asset": asset, "oid": oid}], sync=sync)
 
     def bulk_cancel(self, cancels: List[CancelRequest], sync: Optional[bool] = None) -> Dict[str, Any]:
         """Cancel up to 10 orders by order id in one request."""
         if not 1 <= len(cancels) <= constants.MAX_CANCELS_PER_REQUEST:
             raise ValueError(f"cancels must contain 1..{constants.MAX_CANCELS_PER_REQUEST} items")
-        action = {"type": "cancel", "cancels": [{"a": c["asset"], "o": c["oid"]} for c in cancels]}
+        action = {
+            "type": "cancel",
+            "cancels": [{"a": _asset(c["asset"]), "o": _order_id("oid", c["oid"])} for c in cancels],
+        }
         return self._post_order_family(action, sync)
 
     def cancel_by_cloid(self, asset: int, cloid: Union[str, int, Cloid], sync: Optional[bool] = None) -> Dict[str, Any]:
@@ -323,7 +367,7 @@ class Exchange(API):
             raise ValueError(f"cancels must contain 1..{constants.MAX_CANCELS_PER_REQUEST} items")
         action = {
             "type": "cancelByCloid",
-            "cancels": [{"a": c["asset"], "cloid": cloid_str(c["cloid"])} for c in cancels],
+            "cancels": [{"a": _asset(c["asset"]), "cloid": cloid_str(c["cloid"])} for c in cancels],
         }
         return self._post_order_family(action, sync)
 
@@ -333,12 +377,12 @@ class Exchange(API):
         The synchronous receipt is ``{"limitCancelled": n, "conditionalCancelled": m}``
         — unlike the rest of the family it has no ``statuses[]``.
         """
-        return self._post_order_family({"type": "cancelAll", "a": asset}, sync)
+        return self._post_order_family({"type": "cancelAll", "a": _asset(asset)}, sync)
 
     def modify(
         self,
         asset: int,
-        oid: Optional[int] = None,
+        oid: Optional[Union[int, str]] = None,
         cloid: Optional[Union[str, int, Cloid]] = None,
         price: Optional[Union[str, int]] = None,
         size: Optional[Union[str, int]] = None,
@@ -349,22 +393,24 @@ class Exchange(API):
         """Modify a resting order located by ``oid`` (preferred) or ``cloid``.
 
         Only price/size/TIF/cloid may change; side, asset, and reduce-only cannot.
-        Provide only the fields you want to change. The synchronous receipt has
-        exactly one ``statuses[]`` entry, shaped like an ``order`` status.
+        Provide only the fields you want to change. ``size`` is the new **total**
+        size including what has already filled (remaining = ``size`` - filled),
+        so it must exceed the filled amount. The synchronous receipt has exactly
+        one ``statuses[]`` entry, shaped like an ``order`` status.
         """
         if oid is None and cloid is None:
             raise ValueError("provide oid or cloid to locate the order")
         if tif is not None and tif not in constants.MODIFY_TIFS:
             raise ValueError(f"modify accepts a resting tif only: {' / '.join(constants.MODIFY_TIFS)}")
-        action: Dict[str, Any] = {"type": "modify", "a": asset}
+        action: Dict[str, Any] = {"type": "modify", "a": _asset(asset)}
         if oid is not None:
-            action["oid"] = oid
+            action["oid"] = _order_id("oid", oid)
         elif cloid is not None:
             action["cloid"] = as_cloid_str(cloid)
         if price is not None:
-            action["p"] = str(price)
+            action["p"] = _positive_amount("price", price)
         if size is not None:
-            action["s"] = str(size)
+            action["s"] = _positive_amount("size", size)
         if tif is not None:
             action["tif"] = tif
         if new_cloid is not None:
@@ -376,7 +422,7 @@ class Exchange(API):
     # ------------------------------------------------------------------ #
     def update_leverage(self, asset: int, leverage: int) -> Dict[str, Any]:
         """Set the leverage multiplier for a contract."""
-        return self._post_dict({"type": "updateLeverage", "a": asset, "leverage": leverage})
+        return self._post_dict({"type": "updateLeverage", "a": _asset(asset), "leverage": leverage})
 
     def update_margin_mode(
         self,
@@ -391,7 +437,7 @@ class Exchange(API):
         the server right now — ``is_hedge=True`` is rejected — while isolated
         margin works under ONE_WAY.
         """
-        action: Dict[str, Any] = {"type": "updateMarginMode", "asset": asset, "isCross": is_cross}
+        action: Dict[str, Any] = {"type": "updateMarginMode", "asset": _asset(asset), "isCross": is_cross}
         if is_hedge is not None:
             action["isHedge"] = is_hedge
         return self._post_dict(action)
@@ -406,7 +452,7 @@ class Exchange(API):
 
         ``is_buy`` selects the side in HEDGE mode; omit it in ONE_WAY.
         """
-        action: Dict[str, Any] = {"type": "updateIsolatedMargin", "asset": asset, "ntli": ntli}
+        action: Dict[str, Any] = {"type": "updateIsolatedMargin", "asset": _asset(asset), "ntli": ntli}
         if is_buy is not None:
             action["isBuy"] = is_buy
         return self._post_dict(action)
@@ -457,6 +503,16 @@ class Exchange(API):
         sl_trigger_type: TriggerType = 0,
         tp_order_type: Optional[TpSlOrderType] = None,
         sl_order_type: Optional[TpSlOrderType] = None,
+        open_tp_price: Optional[Union[str, int]] = None,
+        open_tp_limit_price: Optional[Union[str, int]] = None,
+        open_tp_size: Optional[Union[str, int]] = None,
+        open_tp_trigger_type: TriggerType = 0,
+        open_tp_order_type: Optional[TpSlOrderType] = None,
+        open_sl_price: Optional[Union[str, int]] = None,
+        open_sl_limit_price: Optional[Union[str, int]] = None,
+        open_sl_size: Optional[Union[str, int]] = None,
+        open_sl_trigger_type: TriggerType = 0,
+        open_sl_order_type: Optional[TpSlOrderType] = None,
     ) -> Dict[str, Any]:
         """Attach take-profit and/or stop-loss triggers to a position.
 
@@ -468,26 +524,44 @@ class Exchange(API):
         1 = oracle; LAST is not accepted.
 
         ``is_position_tpsl=True`` binds the legs to the position and derives the
-        closing side; pass ``False`` with ``order_side`` (``"B"`` / ``"S"``) for
-        a standalone trigger. The receipt carries ``tpOrderId`` / ``slOrderId``,
-        ``0`` for a leg that was not set.
+        closing side; either or both legs may be set. ``False`` creates a
+        standalone conditional order instead: it needs ``order_side`` (``"B"`` /
+        ``"S"``, the side placed on trigger) and **exactly one** leg — its
+        ``tp_price`` / ``sl_price`` is when it fires. The receipt carries
+        ``tpOrderId`` / ``slOrderId``, ``0`` for a leg that was not set.
+
+        ``open_tp_*`` / ``open_sl_*`` (standalone only) attach a take-profit /
+        stop-loss to the order a standalone conditional places when it fires —
+        a second layer, not this order's own trigger. Same rules per leg.
         """
         _check_tpsl_leg("tp", tp_price, tp_limit_price, tp_order_type)
         _check_tpsl_leg("sl", sl_price, sl_limit_price, sl_order_type)
-        if not (_is_set(tp_price) or _is_set(sl_price)):
-            raise ValueError("set tp_price or sl_price (or both) above 0")
+        _check_tpsl_leg("open_tp", open_tp_price, open_tp_limit_price, open_tp_order_type)
+        _check_tpsl_leg("open_sl", open_sl_price, open_sl_limit_price, open_sl_order_type)
+        legs = [leg for leg, price in (("tp", tp_price), ("sl", sl_price)) if _is_set(price)]
+        if not legs:
+            raise ValueError("set tp_price or sl_price above 0")
+        has_open = _is_set(open_tp_price) or _is_set(open_sl_price)
+        if is_position_tpsl:
+            if has_open:
+                raise ValueError("open_tp_* / open_sl_* apply to a standalone conditional (is_position_tpsl=False)")
+        else:
+            if order_side not in ("B", "S"):
+                raise ValueError('a standalone conditional (is_position_tpsl=False) needs order_side "B" or "S"')
+            if len(legs) != 1:
+                raise ValueError("a standalone conditional takes exactly one of tp_price / sl_price")
         action: Dict[str, Any] = {
             "type": "tpSl",
-            "a": asset,
+            "a": _asset(asset),
             "positionSide": position_side,
             "isPositionTpsl": is_position_tpsl,
             "reduceOnly": reduce_only,
-            "tpPrice": str(tp_price),
-            "slPrice": str(sl_price),
-            "tpLimitPrice": str(tp_limit_price),
-            "slLimitPrice": str(sl_limit_price),
-            "tpSize": str(tp_size),
-            "slSize": str(sl_size),
+            "tpPrice": _amount("tp_price", tp_price),
+            "slPrice": _amount("sl_price", sl_price),
+            "tpLimitPrice": _amount("tp_limit_price", tp_limit_price),
+            "slLimitPrice": _amount("sl_limit_price", sl_limit_price),
+            "tpSize": _amount("tp_size", tp_size),
+            "slSize": _amount("sl_size", sl_size),
             "tpTriggerType": tp_trigger_type,
             "slTriggerType": sl_trigger_type,
             "tpOrderType": tp_order_type or 0,
@@ -495,21 +569,31 @@ class Exchange(API):
         }
         if order_side is not None:
             action["orderSide"] = order_side
+        for leg, price, limit_price, size, trigger_type, order_type in (
+            ("openTp", open_tp_price, open_tp_limit_price, open_tp_size, open_tp_trigger_type, open_tp_order_type),
+            ("openSl", open_sl_price, open_sl_limit_price, open_sl_size, open_sl_trigger_type, open_sl_order_type),
+        ):
+            if _is_set(price):
+                action[f"{leg}Price"] = _amount(f"{leg}Price", price)
+                action[f"{leg}LimitPrice"] = _amount(f"{leg}LimitPrice", limit_price)
+                action[f"{leg}Size"] = _amount(f"{leg}Size", size if size is not None else 0)
+                action[f"{leg}TriggerType"] = trigger_type
+                action[f"{leg}OrderType"] = order_type
         return self._post_dict(action)
 
     def cancel_tp_sl(self, asset: int, position_side: PositionSide = 0) -> Dict[str, Any]:
         """Cancel all TP/SL trigger orders for a position (idempotent)."""
-        return self._post_dict({"type": "cancelTpSl", "a": asset, "positionSide": position_side})
+        return self._post_dict({"type": "cancelTpSl", "a": _asset(asset), "positionSide": position_side})
 
-    def cancel_conditional(self, oid: int) -> Dict[str, Any]:
-        """Cancel a single conditional order by id."""
-        return self._post_dict({"type": "cancelConditional", "oid": oid})
+    def cancel_conditional(self, oid: Union[int, str]) -> Dict[str, Any]:
+        """Cancel a single conditional order by id (``tpOrderId`` / ``slOrderId``)."""
+        return self._post_dict({"type": "cancelConditional", "oid": _order_id("oid", oid)})
 
     # ------------------------------------------------------------------ #
     # Collateral (typed path)
     # ------------------------------------------------------------------ #
     def lock_collateral(self, market_deployer_id: int, coin_id: int, amount: Union[str, int]) -> Dict[str, Any]:
-        """Lock collateral into a market deployer's margin pool (typed path)."""
+        """Lock collateral into a market deployer's margin pool (typed path, master key only)."""
         return self._post_dict(
             {
                 "type": "lockCollateral",
@@ -520,7 +604,7 @@ class Exchange(API):
         )
 
     def unlock_collateral(self, market_deployer_id: int, coin_id: int, amount: Union[str, int]) -> Dict[str, Any]:
-        """Unlock collateral from a market deployer (typed path)."""
+        """Unlock collateral from a market deployer (typed path, master key only)."""
         return self._post_dict(
             {
                 "type": "unlockCollateral",
@@ -537,7 +621,7 @@ class Exchange(API):
         coin_id: int,
         amount: Union[str, int],
     ) -> Dict[str, Any]:
-        """Move collateral between two market deployers (typed path)."""
+        """Move collateral between two market deployers (typed path, master key only)."""
         return self._post_dict(
             {
                 "type": "transferBetweenDeployers",
@@ -652,14 +736,63 @@ class Exchange(API):
         return result
 
 
+_INT64_MAX = 2**63 - 1
+_INT32_MAX = 2**31 - 1
+
+
+def _as_int(name: str, value: Any) -> int:
+    """Parse an integer given as ``int`` or decimal string (never ``bool`` / float)."""
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        raise TypeError(f"{name} must be an int or a decimal string, got {value!r}")
+    text = str(value).strip()
+    if not text.lstrip("-").isdigit():
+        raise ValueError(f"{name} must be a raw integer string, got {value!r}")
+    return int(text)
+
+
+def _asset(value: Any) -> int:
+    """Contract id as the JSON number the server requires (``configs`` ids may arrive as strings)."""
+    asset = _as_int("asset", value)
+    if not 0 < asset <= _INT32_MAX:
+        raise ValueError(f"asset must be a positive contract id, got {value!r}")
+    return asset
+
+
+def _order_id(name: str, value: Any) -> int:
+    """Order id as a JSON number; ``/info`` returns ids as strings, the actions take numbers."""
+    order_id = _as_int(name, value)
+    if not 0 < order_id <= _INT64_MAX:
+        raise ValueError(f"{name} must be a positive int64, got {value!r}")
+    return order_id
+
+
+def _non_negative_int(name: str, value: Any) -> int:
+    number = _as_int(name, value)
+    if not 0 <= number <= _INT32_MAX:
+        raise ValueError(f"{name} must be in [0, {_INT32_MAX}], got {value!r}")
+    return number
+
+
+def _amount(name: str, value: Any) -> str:
+    """A raw (scaled) non-negative integer amount, as its wire decimal string."""
+    number = _as_int(name, value)
+    if number < 0:
+        raise ValueError(f"{name} must not be negative, got {value!r}")
+    return str(number)
+
+
+def _positive_amount(name: str, value: Any) -> str:
+    number = _as_int(name, value)
+    if number <= 0:
+        raise ValueError(f"{name} must be a positive raw integer string, got {value!r}")
+    return str(number)
+
+
 def _is_set(price: Optional[Union[str, int]]) -> bool:
     """A price field counts as set only when present and above zero."""
     if price is None:
         return False
-    try:
-        return int(str(price)) > 0
-    except ValueError as exc:
-        raise ValueError(f"price must be a raw integer string, got {price!r}") from exc
+    return _as_int("price", price) > 0
 
 
 def _check_tpsl_leg(
@@ -711,10 +844,12 @@ def _put_tpsl_leg(
 
 def _order_to_wire(order: OrderRequest) -> Dict[str, Any]:
     """Convert a Pythonic :class:`OrderRequest` to the compact wire order object."""
+    if not isinstance(order["is_buy"], bool):
+        raise TypeError(f"is_buy must be a bool, got {order['is_buy']!r}")
     wire: Dict[str, Any] = {
-        "a": order["asset"],
+        "a": _asset(order["asset"]),
         "b": order["is_buy"],
-        "s": str(order["size"]),
+        "s": _positive_amount("size", order["size"]),
         "r": bool(order.get("reduce_only", False)),
     }
     if "price" not in order:
@@ -726,7 +861,7 @@ def _order_to_wire(order: OrderRequest) -> Dict[str, Any]:
         # A market order is not price-band checked, so a price that scaled down
         # to 0 would sweep the book rather than be rejected.
         raise ValueError(f"price must be a positive raw integer string, got {order['price']!r}")
-    wire["p"] = str(order["price"])
+    wire["p"] = _positive_amount("price", order["price"])
     trigger_px = order.get("trigger_px")
     if trigger_px is not None:
         tpsl = order.get("trigger_tpsl")
@@ -737,7 +872,7 @@ def _order_to_wire(order: OrderRequest) -> Dict[str, Any]:
             )
         wire["t"] = {
             "trigger": {
-                "triggerPx": str(trigger_px),
+                "triggerPx": _positive_amount("trigger_px", trigger_px),
                 "isMarket": bool(order.get("trigger_is_market", True)),
                 "tpsl": tpsl,
             }
@@ -745,7 +880,10 @@ def _order_to_wire(order: OrderRequest) -> Dict[str, Any]:
     elif order.get("is_market"):
         wire["t"] = {"market": {}}
     else:
-        wire["t"] = {"limit": {"tif": order.get("tif", constants.TIF_GTC)}}
+        tif = order.get("tif", constants.TIF_GTC)
+        if tif not in constants.TIFS:
+            raise ValueError(f"tif must be one of {' / '.join(constants.TIFS)}, got {tif!r}")
+        wire["t"] = {"limit": {"tif": tif}}
     cloid = as_cloid_str(order.get("cloid"))
     if cloid is not None:
         wire["c"] = cloid
@@ -763,8 +901,6 @@ def _tpsl_to_wire(order: OrderRequest, wire: Dict[str, Any]) -> None:
     legs = [leg for leg in ("tp", "sl") if _is_set(fields.get(f"{leg}_price"))]
     if not legs:
         return
-    if "trigger_px" in order:
-        raise ValueError("a trigger order cannot carry inline TP/SL; those belong on a limit or market entry")
     if order.get("reduce_only"):
         raise ValueError("a reduce-only order cannot carry inline TP/SL; the whole order would be rejected")
     for leg in legs:
@@ -774,8 +910,8 @@ def _tpsl_to_wire(order: OrderRequest, wire: Dict[str, Any]) -> None:
             fields.get(f"{leg}_limit_price"),
             fields.get(f"{leg}_order_type"),
         )
-        wire[f"{leg}Price"] = str(fields[f"{leg}_price"])
-        wire[f"{leg}LimitPrice"] = str(fields[f"{leg}_limit_price"])
-        wire[f"{leg}Size"] = str(fields.get(f"{leg}_size", "0"))
+        wire[f"{leg}Price"] = _amount(f"{leg}_price", fields[f"{leg}_price"])
+        wire[f"{leg}LimitPrice"] = _amount(f"{leg}_limit_price", fields[f"{leg}_limit_price"])
+        wire[f"{leg}Size"] = _amount(f"{leg}_size", fields.get(f"{leg}_size", "0"))
         wire[f"{leg}TriggerType"] = fields.get(f"{leg}_trigger_type", constants.TRIGGER_TYPE_MARK)
         wire[f"{leg}OrderType"] = fields[f"{leg}_order_type"]

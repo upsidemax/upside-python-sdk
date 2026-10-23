@@ -74,6 +74,13 @@ _TYPED: Dict[str, str] = {
     ),
 }
 
+# A typed action whose struct depends on which optional fields are present:
+# ``registerAccount`` carrying ``marketDeployerId`` (any value, 0 included) is
+# signed over the second struct.
+_TYPED_WITH_FIELD: Dict[str, Dict[str, str]] = {
+    "registerAccount": {"marketDeployerId": "RegisterAccount(address address,uint32 marketDeployerId,uint64 nonce)"},
+}
+
 # Optional typed fields MUST still appear in the wire JSON — the server reads
 # them by name to recompute the digest. Inject defaults before signing so the
 # signed struct and the sent JSON match, otherwise recovery yields a different
@@ -88,23 +95,31 @@ def is_typed_action(action_type: str) -> bool:
     return action_type in _TYPED
 
 
-def _encode_field(sol_type: str, value: Any) -> bytes:
+def _encode_field(sol_type: str, name: str, value: Any) -> bytes:
     if sol_type == "address":
         return _addr(value)
     if sol_type == "string":
         return _string(value)
-    return _u(value)  # uintN
+    # uintN: the server hashes these only when the wire value is a JSON integer,
+    # so a string or bool here would sign fine and still fail SIGNATURE_INVALID.
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise TypeError(f"{name} must be a non-negative int, got {value!r}")
+    return _u(value)
 
 
 def _typed_struct(type_str: str, action: Dict[str, Any], nonce: int) -> bytes:
     fields = [f.split() for f in type_str[type_str.index("(") + 1 : -1].split(",")]
-    encoded = [_encode_field(sol_type, nonce if name == "nonce" else action[name]) for sol_type, name in fields]
+    encoded = [_encode_field(sol_type, name, nonce if name == "nonce" else action[name]) for sol_type, name in fields]
     return keccak(keccak(type_str.encode()) + b"".join(encoded))
 
 
 def action_hash(action: Dict[str, Any], nonce: int) -> bytes:
-    """Agent-path ``actionHash`` = keccak(canonicalJson ‖ nonce_be8)."""
-    canonical = json.dumps(action, sort_keys=True, separators=(",", ":")).encode()
+    """Agent-path ``actionHash`` = keccak(canonicalJson ‖ nonce_be8).
+
+    Canonical JSON: keys sorted, no whitespace, non-ASCII text as raw UTF-8 (the
+    server does not ``\\u``-escape it), control characters escaped.
+    """
+    canonical = json.dumps(action, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
     return keccak(canonical + int(nonce).to_bytes(8, "big"))
 
 
@@ -120,6 +135,9 @@ def eip712_digest(action: Dict[str, Any], nonce: int, signature_chain_id: Option
     actions always use 9767 and ignore it.
     """
     type_str = _TYPED.get(action["type"])
+    for field, variant in _TYPED_WITH_FIELD.get(action["type"], {}).items():
+        if field in action:
+            type_str = variant
     if type_str is not None:
         for key, default in _TYPED_DEFAULTS.get(action["type"], {}).items():
             action.setdefault(key, default)
@@ -169,9 +187,15 @@ def to_wallet(wallet_or_key: Union[Wallet, str]) -> Wallet:
 class NonceManager:
     """Thread-safe, strictly increasing millisecond nonce source.
 
-    Each signing address needs unique, monotonic nonces; the server rejects a
-    reused or regressing nonce with ``NONCE_REUSED``. Sub-millisecond bursts are
-    handled by incrementing past the last issued value.
+    The server needs each signer's nonces to be unique and within
+    ``(block time - 2 days, block time + 1 day)``; it does not need them to be
+    increasing. A nonce still in flight is refused with ``400 DUPLICATE_NONCE``;
+    a used, too old, or too new one is rejected by the engine. Sub-millisecond
+    bursts are handled by incrementing past the last issued value.
+
+    Uniqueness is per instance: share one manager between every ``Exchange``
+    signing with the same key, and do not run two processes on one key without
+    partitioning the nonce space.
     """
 
     def __init__(self) -> None:

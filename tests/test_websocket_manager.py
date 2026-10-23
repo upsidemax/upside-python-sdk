@@ -337,3 +337,65 @@ def test_group_removed_reaches_subscriber_and_is_not_replayed():
     sent.clear()
     manager._on_open(None)  # reconnect
     assert [s["subscription"] for s in sent] == [{"type": "l2Book", "asset": "1"}]
+
+
+# -- review fixes 2026-10-23 -----------------------------------------------------
+def test_numeric_asset_is_sent_as_string():
+    """The server refuses "asset": 1; configs hands out contract ids as ints."""
+    manager, sent = _ready_manager()
+    got = []
+    manager.subscribe({"type": "l2Book", "asset": 1}, got.append)  # type: ignore[typeddict-item]
+    assert sent[-1]["subscription"] == {"type": "l2Book", "asset": "1"}
+    manager._on_message(None, json.dumps({"channel": "l2Book", "data": {"asset": "1", "group": 0}}))
+    assert len(got) == 1
+
+
+def test_error_frames_and_failed_auth_reach_error_callback():
+    errors = []
+    manager = WebsocketManager("https://dev.upsidemax.xyz", error_callback=errors.append)
+    bad = {"channel": "error", "data": {"code": "BAD_SUBSCRIPTION", "message": "missing/invalid params"}}
+    manager._on_message(None, json.dumps(bad))
+    manager._on_message(None, json.dumps({"msg": "AuthResult", "success": False, "accountId": 0}))
+    manager._on_message(None, json.dumps({"msg": "AuthResult", "success": True, "accountId": 5}))
+    assert errors == [bad, {"msg": "AuthResult", "success": False, "accountId": 0}]
+
+
+def test_dropped_connection_defers_sends_to_the_replay():
+    import websocket
+
+    manager = WebsocketManager("https://dev.upsidemax.xyz")
+    manager.ws_ready = True
+
+    def closed(_payload):
+        raise websocket.WebSocketConnectionClosedException("socket is already closed.")
+
+    manager.ws.send = closed  # type: ignore[method-assign]
+    manager._on_error(None, ConnectionResetError("reset"))
+    assert manager.ws_ready is False
+    sid = manager.subscribe({"type": "bbo", "asset": "1"}, lambda _m: None)  # must not raise
+    assert sid == 1
+
+    manager.ws_ready = True  # a send racing the drop is swallowed too
+    manager.subscribe({"type": "trades", "asset": "1"}, lambda _m: None)
+    assert manager.ws_ready is False
+
+    sent = []
+    manager.ws.send = sent.append  # type: ignore[method-assign]
+    manager._on_open(None)
+    assert {json.loads(s)["subscription"]["type"] for s in sent} == {"bbo", "trades"}
+
+
+def test_empty_trades_snapshot_is_not_misrouted():
+    assert ws_message_to_identifier({"channel": "trades", "isSnapshot": True, "data": []}) is None
+
+
+def test_bad_candle_interval_rejected_before_sending():
+    manager, sent = _ready_manager()
+    with pytest.raises(WebsocketError):
+        manager.subscribe({"type": "candle", "asset": "1", "interval": "bogus"}, lambda _m: None)
+    assert sent == []
+
+
+def test_ping_interval_must_leave_room_for_the_pong_timeout():
+    with pytest.raises(ValueError):
+        WebsocketManager("https://dev.upsidemax.xyz", ping_interval=5)

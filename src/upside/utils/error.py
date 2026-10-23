@@ -72,10 +72,14 @@ class OutcomeUnknownError(UpsideError):
     Raised on a read timeout or a connection dropped mid-response. The action
     may or may not have executed, and the SDK does not resend it: the identical
     envelope reuses the ``nonce`` and is rejected (``DUPLICATE_NONCE``) whether
-    or not the first attempt landed. Confirm the outcome (``orderUpdates`` /
-    ``userOrders`` / ``userFills``, or look the order up by ``cloid``) and sign
-    a fresh request if it did not execute. The underlying ``requests``
-    exception is ``__cause__``.
+    or not the first attempt landed. Confirm the outcome before signing a fresh
+    request: ``orderUpdates`` / ``userFills`` on WebSocket, or REST
+    ``user_orders`` (orders still resting) **and** ``order_history`` /
+    ``user_fills`` (orders already filled or canceled). Do not rely on
+    ``orders_by_cloids`` / ``orders_by_ids`` alone: they only see live orders,
+    so an order that filled at once looks missing there. History is indexed a
+    moment after execution: re-check for a few seconds. The underlying
+    ``requests`` exception is ``__cause__``.
 
     Attributes:
         action_type: ``action["type"]`` of the request, when known.

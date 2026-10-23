@@ -134,19 +134,26 @@ exchange.order(asset=1, is_buy=True, size="10", price="50")
 exchange.cancel(asset=1, oid=15, sync=False)           # per-call override
 ```
 
-- `sync=True` — HTTP 200 once the action has executed. `order` / `cancel` /
-  `cancelByCloid` / `modify` return `response.data.statuses[]`, one entry per
-  submitted item in request order (`modify`: exactly one) — `{"resting": {"oid"}}`,
-  `{"filled": {"totalSz", "avgPx", "oid"}}` or `{"error": "..."}`. `cancelAll`
-  returns `{"limitCancelled": n, "conditionalCancelled": m}` instead (no `statuses`).
+- `sync=True` — HTTP 200 once the action has executed, with
+  `response.data.statuses[]` holding one entry per submitted item in request
+  order. `order` / `modify` (`modify`: exactly one) entries are
+  `{"resting": {"oid"}}`, `{"filled": {"totalSz", "avgPx", "oid"}}` or
+  `{"error": "..."}`; `cancel` / `cancelByCloid` entries are `"success"` or
+  `{"error": "..."}`. `cancelAll` returns
+  `{"limitCancelled": n, "conditionalCancelled": m}` instead (no `statuses`).
+  A malformed request is refused with `400 INVALID_PARAM` (`ClientError`).
 - `sync=False` — HTTP 202 straight away with
   `{"status": "accepted", "response": {"type": "accepted", "data": {"count": 1}}}`;
   the per-item outcome arrives on the `orderUpdates` channel, correlated by
-  `cloid`, or by `n` (your nonce) + `si` (index within the batch).
+  `cloid`, or by `n` (your nonce) + `si` (index within the batch). The gateway
+  does not validate parameters on this path — a request the chain cannot parse
+  is dropped with no `orderUpdates` entry — so the SDK checks every field
+  (ids, sizes, prices, TIF, types) before signing and raises `ValueError` /
+  `TypeError` instead.
 - not set — the server's default (currently 202). Set it explicitly if you parse
   the response.
 
-A trigger order answers with the TP/SL receipt
+A trigger order answers (with `sync=True`) with the TP/SL receipt
 `{"type": "tpSl", "data": {"tpOrderId": n, "slOrderId": n}}`. Every other action
 is always synchronous and rejects `sync`, so the SDK only sends it on these five.
 
@@ -169,16 +176,25 @@ Every request has a timeout (`(5, 10)` seconds connect/read by default; pass
   *even if the first attempt executed*, so a read timeout raises
   `OutcomeUnknownError` (carrying `nonce` and `action_type`) instead. A `504
   DOWNSTREAM_TIMEOUT` on a `sync=True` request means the same thing. Confirm the
-  outcome — `orderUpdates`, `userOrders`, `ordersByCloids` — before signing a
-  new request.
+  outcome before signing a new request: `user_orders` for orders still resting
+  **and** `order_history` / `user_fills` for ones that already filled or were
+  canceled (or the `orderUpdates` stream). `orders_by_cloids` alone is not
+  enough — it only sees live orders. History is indexed a moment after
+  execution, so re-check for a few seconds before concluding it did not land.
 
 ```python
-from upside import OutcomeUnknownError, ServerError
+import time
 
+from upside import OutcomeUnknownError
+
+sent_at_ms = int(time.time() * 1000)
 try:
     exchange.order(asset=1, is_buy=True, size="10", price="50", cloid=cloid, sync=True)
 except OutcomeUnknownError:
-    found = info.orders_by_cloids(account_id, 0, [cloid])     # did it land?
+    # Did it land? Live orders are in user_orders, finished ones in order_history.
+    live = info.user_orders(account_id)["orders"]
+    done = info.order_history(account_id, start_time=sent_at_ms)["orders"]
+    landed = any(o.get("clientOrderId") == str(cloid) for o in live + done)
 ```
 
 ### HTTP 200 ≠ success
@@ -226,11 +242,18 @@ frame (the grouping was dropped from the config) ends it. The client pings every
 30s and auto-reconnects, replaying subscriptions.
 
 Several channels open with a snapshot frame whose shape differs from the
-increments that follow — `candle` (a batch of bars under `asset`/`interval`),
-`openOrders` (`userOrders`'s response body), and `orderUpdates` / `userFills`
-(the last 10 history rows under `data.rows`, in REST's long field names rather
-than the compact wire ones). Dispatch handles the routing; your callback still
-has to read both shapes.
+increments that follow — `openOrders` (`userOrders`'s response body),
+`orderUpdates` / `userFills` (recent history rows in REST's long field names
+rather than the compact wire ones), and `trades` (recent trades, flagged
+`isSnapshot`). `candle` has no snapshot frame: fetch history with
+`candle_snapshot` and apply the stream on top. Dispatch handles the routing;
+your callback still has to read both shapes.
+
+`asset` may be given as an int; it is sent as the string the server requires.
+A refused subscription comes back as an `error` frame that does not say which
+subscription it was — pass `Info(ws_error_callback=...)` to see those (and
+failed `AuthResult` frames). Callbacks run on the socket's reader thread, so
+keep them short.
 
 ## Signing
 

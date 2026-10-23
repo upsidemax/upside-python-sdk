@@ -31,6 +31,9 @@ MAX_CANCELS_PER_REQUEST = 10
 # openOrders snapshot). Past it the list is cut and ``truncated`` is true.
 MAX_ORDERS_PER_QUERY = 850
 
+# Max ids in one ordersByIds / ordersByCloids request; more is a 400.
+MAX_QUERY_IDS = 256
+
 # Max rows per page for the history queries (userFills / orderHistory /
 # userFundingFlows); also their default. Asking for more is a 400.
 MAX_HISTORY_LIMIT = 1000
@@ -81,6 +84,7 @@ TIF_GTC = "Gtc"
 TIF_IOC = "Ioc"
 TIF_ALO = "Alo"
 TIF_FOK = "Fok"
+TIFS = (TIF_GTC, TIF_IOC, TIF_ALO, TIF_FOK)
 
 # Envelope ``sync`` flag: only these actions accept it. Every other action is
 # always answered synchronously and rejects the flag (400 SYNC_NOT_APPLICABLE).

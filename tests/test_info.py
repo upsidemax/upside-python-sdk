@@ -192,3 +192,71 @@ def test_string_entries_in_errors_do_not_break_the_exception(info, fake_session)
         info.configs()
     assert exc.value.code == "INVALID_PARAM"
     assert exc.value.errors == []
+
+
+# -- review fixes 2026-10-23 -----------------------------------------------------
+def test_l2_book_group(info, fake_session):
+    info.l2_book(1, group="10")
+    assert body(fake_session) == {"type": "l2Book", "asset": "1", "group": 10}
+    info.l2_book(1)
+    assert "group" not in body(fake_session)
+
+
+@pytest.mark.parametrize("call", [lambda i, ids: i.orders_by_ids(1, ids), lambda i, ids: i.orders_by_cloids(5, 1, ids)])
+def test_id_lists_capped_at_server_limit(info, fake_session, call):
+    call(info, list(range(1, 257)))
+    with pytest.raises(ValueError):
+        call(info, list(range(1, 258)))
+    with pytest.raises(ValueError):
+        call(info, [])
+    assert len(fake_session.requests) == 1
+
+
+def test_id_lookups_need_the_real_deployer(info, fake_session):
+    with pytest.raises(ValueError, match="deployer"):
+        info.orders_by_ids(0, [1])
+    with pytest.raises(ValueError, match="deployer"):
+        info.orders_by_cloids(5, 0, [1])
+    assert fake_session.requests == []
+
+
+def test_history_end_time_zero_is_unbounded(info, fake_session):
+    info.user_fills(5, start_time=100, end_time=0)
+    assert body(fake_session)["endTime"] == 0
+    with pytest.raises(ValueError):
+        info.user_fills(5, start_time=200, end_time=100)
+
+
+def test_candle_interval_checked(info, fake_session):
+    with pytest.raises(ValueError, match="interval"):
+        info.candle_snapshot(1, "2d")
+    assert fake_session.requests == []
+
+
+def test_l2book_group_equal_to_tick_size_subscribes_the_raw_book(info, fake_session):
+    """The server streams group == tickSize on the raw channel with data.group 0."""
+    from upside.websocket_manager import WebsocketManager
+
+    fake_session.queue({"contracts": [{"contractId": 1, "tickSize": "1", "digitMerge": ["1", "10"]}]})
+    manager = WebsocketManager("https://dev.upsidemax.xyz")
+    sent = []
+    manager._send = sent.append  # type: ignore[method-assign]
+    manager.ws_ready = True
+    info.ws_manager = manager
+
+    got_tick, got_raw = [], []
+    sid_tick = info.subscribe({"type": "l2Book", "asset": "1", "group": 1}, got_tick.append)
+    info.subscribe({"type": "l2Book", "asset": "1"}, got_raw.append)
+    info.subscribe({"type": "l2Book", "asset": "1", "group": 10}, lambda _m: None)
+    assert [s["subscription"] for s in sent] == [
+        {"type": "l2Book", "asset": "1"},
+        {"type": "l2Book", "asset": "1", "group": 10},
+    ]
+    manager._on_message(None, '{"channel": "l2Book", "data": {"asset": "1", "group": 0}}')
+    assert len(got_tick) == 1 and len(got_raw) == 1
+
+    # Dropping the tick-sized one must not unsubscribe the raw book it shares.
+    sent.clear()
+    info.unsubscribe({"type": "l2Book", "asset": "1", "group": 1}, sid_tick)
+    assert sent == []
+    assert len(fake_session.requests) == 1  # configs fetched once and cached

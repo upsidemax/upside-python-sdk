@@ -430,23 +430,23 @@ def test_inline_tp_sl_rejected_on_reduce_only_order(exchange):
         )
 
 
-def test_inline_tp_sl_rejected_on_trigger_order(exchange):
-    from upside.exchange import _order_to_wire
-
-    with pytest.raises(ValueError, match="trigger order cannot carry inline TP/SL"):
-        _order_to_wire(
-            {
-                "asset": 1,
-                "is_buy": True,
-                "size": "1",
-                "price": "100",
-                "trigger_px": "99",
-                "trigger_tpsl": "sl",
-                "tp_price": "120",
-                "tp_limit_price": "119",
-                "tp_order_type": 1,
-            }
-        )
+def test_trigger_order_carries_tp_sl_of_the_order_it_places(exchange, fake_session):
+    """Since 2026-09-21 a trigger order's top-level tp*/sl* belong to the order placed on trigger."""
+    exchange.trigger_order(
+        asset=1,
+        is_buy=True,
+        size="1",
+        price="100",
+        trigger_px="99",
+        tpsl="tp",
+        tp_price="120",
+        tp_limit_price="119",
+        tp_order_type=1,
+    )
+    order = _action(fake_session)["orders"][0]
+    assert order["t"] == {"trigger": {"triggerPx": "99", "isMarket": True, "tpsl": "tp"}}
+    assert order["tpPrice"] == "120" and order["tpLimitPrice"] == "119" and order["tpOrderType"] == 1
+    assert "slPrice" not in order
 
 
 def test_batch_rejects_trigger_and_inline_tpsl(exchange):
@@ -506,7 +506,7 @@ def test_invalid_param_errors_are_exposed(exchange, fake_session):
         400,
     )
     with pytest.raises(ClientError) as exc:
-        exchange.order(asset=1, is_buy=True, size="0", price="1")
+        exchange.order(asset=1, is_buy=True, size="1", price="1", sync=True)
     assert exc.value.errors == [{"field": "s", "reason": "OUT_OF_RANGE", "expected": "> 0"}]
     assert "OUT_OF_RANGE" in str(exc.value)
 
@@ -661,3 +661,128 @@ def test_instance_sync_not_sent_on_other_actions(fake_session):
 def test_sync_must_be_a_bool(exchange):
     with pytest.raises(TypeError):
         exchange.cancel(asset=1, oid=3, sync="true")  # type: ignore[arg-type]
+
+
+# -- local validation: the async path drops malformed actions without a trace ----
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda ex: ex.order(asset=1, is_buy=True, size="0", price="50"),
+        lambda ex: ex.order(asset=1, is_buy=True, size="-5", price="50"),
+        lambda ex: ex.order(asset=1, is_buy=True, size="1.5", price="50"),
+        lambda ex: ex.order(asset=1, is_buy=True, size="abc", price="50"),
+        lambda ex: ex.order(asset=1, is_buy=True, size="1", price="50", tif="Day"),  # type: ignore[arg-type]
+        lambda ex: ex.order(asset=1, is_buy=1, size="1", price="50"),  # type: ignore[arg-type]
+        lambda ex: ex.order(asset=0, is_buy=True, size="1", price="50"),
+        lambda ex: ex.order(asset=True, is_buy=True, size="1", price="50"),
+        lambda ex: ex.trigger_order(asset=1, is_buy=True, size="1", price="50", trigger_px="0", tpsl="sl"),
+        lambda ex: ex.modify(asset=1, oid=1, price="0"),
+        lambda ex: ex.modify(asset=1, oid=1, size="-1"),
+        lambda ex: ex.cancel(asset=1, oid="x"),
+        lambda ex: ex.cancel(asset=1, oid=0),
+        lambda ex: ex.cancel_conditional(oid=-3),
+    ],
+)
+def test_malformed_fields_never_leave_the_client(exchange, fake_session, call):
+    with pytest.raises((ValueError, TypeError)):
+        call(exchange)
+    assert fake_session.requests == []
+
+
+def test_string_ids_from_info_are_sent_as_numbers(exchange, fake_session):
+    """/info returns ids as strings; the actions only accept JSON numbers."""
+    exchange.cancel(asset="1", oid="8280")
+    assert _action(fake_session)["cancels"] == [{"a": 1, "o": 8280}]
+    exchange.modify(asset="1", oid="8280", price="150")
+    assert _action(fake_session)["a"] == 1 and _action(fake_session)["oid"] == 8280
+    exchange.cancel_conditional(oid="734796988633055604")
+    assert _action(fake_session)["oid"] == 734796988633055604
+    exchange.order(asset="2", is_buy=True, size=3, price=40)
+    assert _action(fake_session)["orders"][0]["a"] == 2
+    assert _action(fake_session)["orders"][0]["s"] == "3"
+
+
+def test_standalone_tp_sl_rules(exchange, fake_session):
+    with pytest.raises(ValueError, match="order_side"):
+        exchange.tp_sl(asset=1, sl_price="80", sl_limit_price="79", sl_order_type=1, is_position_tpsl=False)
+    with pytest.raises(ValueError, match="exactly one"):
+        exchange.tp_sl(
+            asset=1,
+            is_position_tpsl=False,
+            order_side="B",
+            tp_price="95",
+            tp_limit_price="94",
+            tp_order_type=1,
+            sl_price="80",
+            sl_limit_price="79",
+            sl_order_type=1,
+        )
+    with pytest.raises(ValueError, match="standalone"):
+        exchange.tp_sl(
+            asset=1,
+            tp_price="95",
+            tp_limit_price="94",
+            tp_order_type=1,
+            open_sl_price="70",
+            open_sl_limit_price="69",
+            open_sl_order_type=2,
+        )
+    assert fake_session.requests == []
+
+
+def test_standalone_tp_sl_with_open_legs_matches_the_documented_example(exchange, fake_session):
+    exchange.tp_sl(
+        asset=1,
+        is_position_tpsl=False,
+        order_side="B",
+        sl_price="80000",
+        sl_limit_price="79900",
+        sl_size="1",
+        sl_order_type=1,
+        open_tp_price="95000",
+        open_tp_limit_price="94900",
+        open_tp_order_type=1,
+        open_sl_price="70000",
+        open_sl_limit_price="69900",
+        open_sl_order_type=2,
+    )
+    action = _action(fake_session)
+    assert action["orderSide"] == "B" and action["isPositionTpsl"] is False
+    assert (action["slPrice"], action["slLimitPrice"], action["slSize"], action["slOrderType"]) == (
+        "80000",
+        "79900",
+        "1",
+        1,
+    )
+    assert action["openTpPrice"] == "95000" and action["openTpLimitPrice"] == "94900"
+    assert action["openTpSize"] == "0" and action["openTpOrderType"] == 1 and action["openTpTriggerType"] == 0
+    assert action["openSlPrice"] == "70000" and action["openSlOrderType"] == 2
+
+
+def test_open_leg_needs_its_order_type(exchange):
+    with pytest.raises(ValueError, match="open_tp_order_type"):
+        exchange.tp_sl(
+            asset=1,
+            is_position_tpsl=False,
+            order_side="B",
+            sl_price="80",
+            sl_limit_price="79",
+            sl_order_type=1,
+            open_tp_price="95",
+            open_tp_limit_price="94",
+        )
+
+
+def test_register_into_a_market_deployer(exchange, fake_session):
+    exchange.register_account(invite_code="X", market_deployer_id=2)
+    assert _action(fake_session) == {"type": "registerAccount", "address": ADDRESS, "marketDeployerId": 2}
+    exchange.register_account(market_deployer_id=0)
+    assert _action(fake_session)["marketDeployerId"] == 0
+    exchange.register_account()
+    assert "marketDeployerId" not in _action(fake_session)
+
+
+def test_register_rejects_a_foreign_address(exchange, fake_session):
+    with pytest.raises(ValueError, match="own address"):
+        exchange.register_account(address="0x" + "ab" * 20)
+    assert fake_session.requests == []

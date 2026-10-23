@@ -23,7 +23,8 @@ happens when the network fails depends on whether resending is safe:
   (``DUPLICATE_NONCE``) even though the first attempt may have executed, so a
   read timeout or a connection dropped mid-response raises
   :class:`~upside.utils.error.OutcomeUnknownError` instead. Confirm the outcome
-  from ``orderUpdates`` / ``userOrders`` / ``userFills`` before re-signing.
+  (``user_orders`` for live orders plus ``order_history`` / ``user_fills`` for
+  finished ones, or the ``orderUpdates`` stream) before re-signing.
 """
 
 import logging
