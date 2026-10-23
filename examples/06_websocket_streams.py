@@ -17,7 +17,7 @@ def main() -> None:
     asset = str(contract["contractId"])
     address = exchange.address
 
-    info.subscribe({"type": "l2Book", "asset": asset}, lambda m: print("l2Book book v", m["data"]["bookVersion"]))
+    info.subscribe({"type": "l2Book", "asset": asset}, lambda m: print("l2Book @", m["data"]["time"]))
     info.subscribe({"type": "trades", "asset": asset}, lambda m: print("trades:", len(m["data"]), "fills"))
     info.subscribe({"type": "orderUpdates", "user": address}, lambda m: print("orderUpdates:", m["data"]))
     info.subscribe({"type": "userFills", "user": address}, lambda m: print("userFills:", m["data"]))

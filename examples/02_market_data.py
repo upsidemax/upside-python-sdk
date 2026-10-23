@@ -15,7 +15,7 @@ def main() -> None:
 
     try:
         book = info.l2_book(asset)
-        print(f"book v{book['bookVersion']}: {len(book['levels'][0])} bids / {len(book['levels'][1])} asks")
+        print(f"book @{book['time']}: {len(book['levels'][0])} bids / {len(book['levels'][1])} asks")
     except Exception as err:  # 503 NOT_READY before any book exists
         print("l2_book not ready:", err)
 

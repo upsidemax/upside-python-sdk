@@ -41,10 +41,19 @@ def _field(subscription: Subscription, name: str) -> Any:
         raise WebsocketError(f'subscription type {subscription["type"]!r} requires {name!r}') from None
 
 
+def _l2book_identifier(asset: Any, group: Any) -> str:
+    """``l2Book:<asset>`` for the raw book, ``l2Book:<asset>,<group>`` per grouping."""
+    group = int(group) if group else 0
+    return f"l2Book:{asset},{group}" if group else f"l2Book:{asset}"
+
+
 def subscription_to_identifier(subscription: Subscription) -> str:
     """Stable key for a subscription, matched against inbound messages."""
     sub_type = subscription["type"]
-    if sub_type in ("l2Book", "bbo", "trades", "ticker"):
+    if sub_type == "l2Book":
+        # Each price grouping is its own channel; no group (or 0) is the raw book.
+        return _l2book_identifier(_field(subscription, "asset"), subscription.get("group"))
+    if sub_type in ("bbo", "trades", "ticker"):
         return f'{sub_type}:{_field(subscription, "asset")}'
     if sub_type == "candle":
         return f'candle:{_field(subscription, "asset")},{_field(subscription, "interval")}'
@@ -65,8 +74,10 @@ def ws_message_to_identifier(message: Dict[str, Any]) -> Optional[str]:
         return None
 
     data: Any = message.get("data")
-    if channel in ("l2Book", "bbo"):
-        return f'{channel}:{data.get("asset")}'
+    if channel == "l2Book":
+        return _l2book_identifier(data.get("asset"), data.get("group"))
+    if channel == "bbo":
+        return f'bbo:{data.get("asset")}'
     if channel == "trades":
         first = data[0] if isinstance(data, list) and data else {}
         return f'trades:{first.get("asset")}'
@@ -88,6 +99,9 @@ def ws_message_to_identifier(message: Dict[str, Any]) -> Optional[str]:
         return f"{sub_type}:{suffix.lower()}"
     if base == "ticker":
         return f"ticker:{suffix}"
+    if base == "l2Book" and isinstance(data, dict):
+        # GroupRemoved names the grouped channel ("l2Book.<asset>.<group>").
+        return _l2book_identifier(data.get("asset"), data.get("group"))
     if base == "userAccount":
         addr, _, deployer = suffix.partition(".")
         if not deployer and isinstance(data, dict):
@@ -113,7 +127,7 @@ class WebsocketManager(threading.Thread):
         # http(s)://host  ->  ws(s)://host/ws
         self.ws_url = "ws" + base_url.rstrip("/")[len("http") :] + "/ws"
         self.ping_interval = ping_interval
-        # A User-Agent header is required to pass the CloudFront edge in front of UAT.
+        # A User-Agent header is required to pass the CloudFront edge in front of the API.
         self._headers = [f"User-Agent: {user_agent}"]
         self._logger = logging.getLogger("upside.ws")
 
@@ -207,6 +221,11 @@ class WebsocketManager(threading.Thread):
             return
         with self._lock:
             callbacks = self._callbacks_for(identifier)
+            if message.get("msg") == "GroupRemoved":
+                # The server has already dropped every subscription to this
+                # grouping; forget it so a reconnect does not replay a
+                # subscription that would now be refused.
+                self._active.pop(identifier, None)
         if not callbacks:
             self._logger.debug("no subscriber for ws frame %s", identifier)
         for callback in callbacks:

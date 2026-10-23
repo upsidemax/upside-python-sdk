@@ -7,15 +7,26 @@ chosen automatically by action type), wraps it in the
 ``qtyScale`` from :meth:`Info.configs`.
 
 The order and cancel family (``order`` / ``cancel`` / ``cancelByCloid`` /
-``cancelAll`` / ``modify``) answers with **either** HTTP 200 carrying a
-``statuses[]`` entry per submitted item, **or** HTTP 202 carrying
-``{"status": "accepted", "response": {"type": "accepted", "data": {"count": n}}}``
-— ``type`` is the literal ``"accepted"``, not the action name. Handle both: on
-202 the per-item outcome arrives on the ``orderUpdates`` WebSocket channel,
-correlated by ``cloid`` or by ``n`` (your nonce) + ``si`` (index in the batch).
-Every other action responds synchronously with ``status: "ok"`` and an
-``errorCode`` inside ``response.data`` when rejected.
-See https://docs.upsidemax.xyz/exchange/overview.
+``cancelAll`` / ``modify``) has two receipt shapes, chosen per request by the
+envelope's ``sync`` flag (unsigned; see the ``sync`` argument):
+
+* ``sync=True`` — HTTP 200 once the action has executed on chain. ``order`` /
+  ``cancel`` / ``cancelByCloid`` / ``modify`` carry ``response.data.statuses[]``,
+  one entry per submitted item in request order (``modify`` always exactly one):
+  ``{"resting": {"oid"}}``, ``{"filled": {"totalSz", "avgPx", "oid"}}`` or
+  ``{"error": "..."}``. ``cancelAll`` carries
+  ``{"limitCancelled": n, "conditionalCancelled": m}`` and **no** ``statuses``.
+* ``sync=False`` — HTTP 202 as soon as the gateway accepts it:
+  ``{"status": "accepted", "response": {"type": "accepted", "data": {"count": 1}}}``.
+  The per-item outcome arrives on the ``orderUpdates`` WebSocket channel,
+  correlated by ``cloid`` or by ``n`` (your nonce) + ``si`` (index in the batch).
+* omitted (``None``, the default) — the deployment's default, currently 202.
+
+A synchronous request that is not answered within 2 s returns
+``504 DOWNSTREAM_TIMEOUT``; like :class:`~upside.utils.error.OutcomeUnknownError`
+it does **not** mean the action failed. Every other action is always
+synchronous: ``status: "ok"`` with an ``errorCode`` inside ``response.data``
+when rejected. See https://docs.upsidemax.xyz/exchange/overview.
 """
 
 import secrets
@@ -23,8 +34,9 @@ from typing import Any, Dict, List, Optional, Tuple, Union, cast
 
 from eth_account import Account
 
-from .api import API
+from .api import API, DEFAULT_BACKOFF, DEFAULT_MAX_RETRIES, Timeout
 from .utils import constants
+from .utils.error import OutcomeUnknownError
 from .utils.signing import NonceManager, Signature, Wallet, is_typed_action, sign_action, to_wallet
 from .utils.types import (
     CancelByCloidRequest,
@@ -49,18 +61,28 @@ class Exchange(API):
     ``wallet`` may be a private-key hex string or an ``eth_account`` LocalAccount.
     For delegated trading, sign with an agent key here while ``account_id`` still
     refers to the master account (the server routes by recovered signer).
+
+    ``sync`` is the default receipt shape for the order and cancel family
+    (``None`` = server default); every such method also takes a per-call
+    ``sync`` that overrides it. ``timeout`` / ``max_retries`` / ``backoff``: see
+    :class:`~upside.api.API` — a write is only resent when it never left this
+    machine.
     """
 
     def __init__(
         self,
         wallet: Union[Wallet, str],
         base_url: Optional[str] = None,
-        timeout: Optional[float] = None,
+        timeout: Optional[Timeout] = None,
         account_id: Optional[Union[int, str]] = None,
         nonce_manager: Optional[NonceManager] = None,
         signature_chain_id: Optional[int] = None,
+        sync: Optional[bool] = None,
+        max_retries: int = DEFAULT_MAX_RETRIES,
+        backoff: float = DEFAULT_BACKOFF,
     ) -> None:
-        super().__init__(base_url, timeout)
+        super().__init__(base_url, timeout, max_retries, backoff)
+        self.sync = sync
         self.wallet: Wallet = to_wallet(wallet)
         self.address: str = self.wallet.address.lower()
         self.account_id = str(account_id) if account_id is not None else None
@@ -80,8 +102,8 @@ class Exchange(API):
     ) -> Dict[str, Any]:
         """Register the wallet and receive an ``accountId`` (typed path).
 
-        ``invite_code`` is required in gated environments (UAT) and is sent
-        unsigned at the envelope top level. On UAT a successful registration
+        ``invite_code`` is required in gated environments (Devnet) and is sent
+        unsigned at the envelope top level. On Devnet a successful registration
         triggers a 10,000 USDC test airdrop within ~10s.
         """
         action = {"type": "registerAccount", "address": (address or self.address).lower()}
@@ -151,6 +173,7 @@ class Exchange(API):
         sl_size: Optional[Union[str, int]] = None,
         sl_trigger_type: TriggerType = 0,
         sl_order_type: Optional[TpSlOrderType] = None,
+        sync: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """Place a single limit or market order, optionally with inline TP/SL.
 
@@ -187,7 +210,7 @@ class Exchange(API):
             request["builder_fee"] = builder_fee
         _put_tpsl_leg(request, "tp", tp_price, tp_limit_price, tp_size, tp_trigger_type, tp_order_type)
         _put_tpsl_leg(request, "sl", sl_price, sl_limit_price, sl_size, sl_trigger_type, sl_order_type)
-        return self.bulk_orders([request])
+        return self.bulk_orders([request], sync=sync)
 
     def trigger_order(
         self,
@@ -200,6 +223,7 @@ class Exchange(API):
         is_market: bool = True,
         reduce_only: bool = False,
         cloid: Optional[Union[str, int, Cloid]] = None,
+        sync: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """Place a conditional order that fires when the mark price crosses ``trigger_px``.
 
@@ -227,7 +251,7 @@ class Exchange(API):
         }
         if cloid is not None:
             request["cloid"] = cloid_str(cloid)
-        return self.bulk_orders([request])
+        return self.bulk_orders([request], sync=sync)
 
     def market_order(
         self,
@@ -237,6 +261,7 @@ class Exchange(API):
         price: Union[str, int],
         reduce_only: bool = False,
         cloid: Optional[Union[str, int, Cloid]] = None,
+        sync: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """Place a market order, executed immediately as IOC.
 
@@ -248,12 +273,15 @@ class Exchange(API):
         Market orders are not price-band checked, so a mistaken price can sweep
         the book. Validate it before calling.
         """
-        return self.order(asset, is_buy, size, price=price, reduce_only=reduce_only, cloid=cloid, is_market=True)
+        return self.order(
+            asset, is_buy, size, price=price, reduce_only=reduce_only, cloid=cloid, is_market=True, sync=sync
+        )
 
-    def bulk_orders(self, orders: List[OrderRequest]) -> Dict[str, Any]:
+    def bulk_orders(self, orders: List[OrderRequest], sync: Optional[bool] = None) -> Dict[str, Any]:
         """Place up to 10 orders in one signed request.
 
         In a batch, only ``orders[0]``'s builder fields apply to the whole batch.
+        With ``sync=True``, ``response.data.statuses[i]`` answers ``orders[i]``.
         """
         if not 1 <= len(orders) <= constants.MAX_ORDERS_PER_REQUEST:
             raise ValueError(f"orders must contain 1..{constants.MAX_ORDERS_PER_REQUEST} items")
@@ -272,24 +300,24 @@ class Exchange(API):
             "orders": [_order_to_wire(o) for o in orders],
             "grouping": "na",
         }
-        return self._post_dict(action)
+        return self._post_order_family(action, sync)
 
-    def cancel(self, asset: int, oid: int) -> Dict[str, Any]:
+    def cancel(self, asset: int, oid: int, sync: Optional[bool] = None) -> Dict[str, Any]:
         """Cancel one resting order by exchange order id."""
-        return self.bulk_cancel([{"asset": asset, "oid": oid}])
+        return self.bulk_cancel([{"asset": asset, "oid": oid}], sync=sync)
 
-    def bulk_cancel(self, cancels: List[CancelRequest]) -> Dict[str, Any]:
+    def bulk_cancel(self, cancels: List[CancelRequest], sync: Optional[bool] = None) -> Dict[str, Any]:
         """Cancel up to 10 orders by order id in one request."""
         if not 1 <= len(cancels) <= constants.MAX_CANCELS_PER_REQUEST:
             raise ValueError(f"cancels must contain 1..{constants.MAX_CANCELS_PER_REQUEST} items")
         action = {"type": "cancel", "cancels": [{"a": c["asset"], "o": c["oid"]} for c in cancels]}
-        return self._post_dict(action)
+        return self._post_order_family(action, sync)
 
-    def cancel_by_cloid(self, asset: int, cloid: Union[str, int, Cloid]) -> Dict[str, Any]:
+    def cancel_by_cloid(self, asset: int, cloid: Union[str, int, Cloid], sync: Optional[bool] = None) -> Dict[str, Any]:
         """Cancel one resting order by client order id."""
-        return self.bulk_cancel_by_cloid([{"asset": asset, "cloid": cloid_str(cloid)}])
+        return self.bulk_cancel_by_cloid([{"asset": asset, "cloid": cloid_str(cloid)}], sync=sync)
 
-    def bulk_cancel_by_cloid(self, cancels: List[CancelByCloidRequest]) -> Dict[str, Any]:
+    def bulk_cancel_by_cloid(self, cancels: List[CancelByCloidRequest], sync: Optional[bool] = None) -> Dict[str, Any]:
         """Cancel up to 10 orders by client order id in one request."""
         if not 1 <= len(cancels) <= constants.MAX_CANCELS_PER_REQUEST:
             raise ValueError(f"cancels must contain 1..{constants.MAX_CANCELS_PER_REQUEST} items")
@@ -297,11 +325,15 @@ class Exchange(API):
             "type": "cancelByCloid",
             "cancels": [{"a": c["asset"], "cloid": cloid_str(c["cloid"])} for c in cancels],
         }
-        return self._post_dict(action)
+        return self._post_order_family(action, sync)
 
-    def cancel_all(self, asset: int) -> Dict[str, Any]:
-        """Cancel every open limit and conditional order for one contract."""
-        return self._post_dict({"type": "cancelAll", "a": asset})
+    def cancel_all(self, asset: int, sync: Optional[bool] = None) -> Dict[str, Any]:
+        """Cancel every open limit and conditional order for one contract.
+
+        The synchronous receipt is ``{"limitCancelled": n, "conditionalCancelled": m}``
+        — unlike the rest of the family it has no ``statuses[]``.
+        """
+        return self._post_order_family({"type": "cancelAll", "a": asset}, sync)
 
     def modify(
         self,
@@ -312,11 +344,13 @@ class Exchange(API):
         size: Optional[Union[str, int]] = None,
         tif: Optional[Tif] = None,
         new_cloid: Optional[Union[str, int, Cloid]] = None,
+        sync: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """Modify a resting order located by ``oid`` (preferred) or ``cloid``.
 
         Only price/size/TIF/cloid may change; side, asset, and reduce-only cannot.
-        Provide only the fields you want to change.
+        Provide only the fields you want to change. The synchronous receipt has
+        exactly one ``statuses[]`` entry, shaped like an ``order`` status.
         """
         if oid is None and cloid is None:
             raise ValueError("provide oid or cloid to locate the order")
@@ -335,7 +369,7 @@ class Exchange(API):
             action["tif"] = tif
         if new_cloid is not None:
             action["c"] = as_cloid_str(new_cloid)
-        return self._post_dict(action)
+        return self._post_order_family(action, sync)
 
     # ------------------------------------------------------------------ #
     # Margin & leverage (full-name fields)
@@ -593,10 +627,24 @@ class Exchange(API):
             envelope["signatureChainId"] = hex(self.signature_chain_id)
         if extra:
             envelope.update(extra)
-        return self.post("/exchange", envelope)
+        try:
+            return self.post("/exchange", envelope)
+        except OutcomeUnknownError as exc:
+            exc.action_type = action["type"]
+            exc.nonce = nonce
+            raise
 
     def _post_dict(self, action: Dict[str, Any], extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         return self._as_dict(self._post_action(action, extra))
+
+    def _post_order_family(self, action: Dict[str, Any], sync: Optional[bool]) -> Dict[str, Any]:
+        """POST an order / cancel action with the envelope ``sync`` flag, if any."""
+        effective = self.sync if sync is None else sync
+        if effective is None:
+            return self._post_dict(action)
+        if not isinstance(effective, bool):
+            raise TypeError(f"sync must be a bool, got {effective!r}")  # the gateway rejects "true" / 1
+        return self._post_dict(action, {"sync": effective})
 
     @staticmethod
     def _as_dict(result: Json) -> Dict[str, Any]:

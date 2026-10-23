@@ -5,13 +5,15 @@ constants — they are server-assigned and differ per environment. Always read
 them from ``Info.configs()`` rather than hardcoding.
 """
 
-# REST + WebSocket base URL. The base URL is the scheme + host only; the SDK
-# appends ``/info``, ``/exchange`` for REST and derives the ``/ws`` path. Pass a
-# different ``base_url`` to Info/Exchange for other environments.
-UAT_API_URL = "https://dev.upsidemax.xyz"
+# REST + WebSocket base URL of the Upside Devnet. The base URL is the scheme +
+# host only; the SDK appends ``/info``, ``/exchange`` for REST and derives the
+# ``/ws`` path. Pass a different ``base_url`` to Info/Exchange for other
+# environments.
+DEVNET_API_URL = "https://dev.upsidemax.xyz"
 
-# Deprecated alias kept for callers written against the pre-rename name.
-QA_API_URL = UAT_API_URL
+# Deprecated aliases kept for callers written against the earlier names.
+UAT_API_URL = DEVNET_API_URL
+QA_API_URL = DEVNET_API_URL
 
 # EIP-712 signing domain (see https://docs.upsidemax.xyz/guide/authentication).
 CHAIN_ID = 9767
@@ -24,6 +26,10 @@ AGENT_SOURCE = "b"
 # Batch limits enforced by the gateway.
 MAX_ORDERS_PER_REQUEST = 10
 MAX_CANCELS_PER_REQUEST = 10
+
+# Max orders in one userOrders / ordersByIds / ordersByCloids answer (and the
+# openOrders snapshot). Past it the list is cut and ``truncated`` is true.
+MAX_ORDERS_PER_QUERY = 850
 
 # Max rows per page for the history queries (userFills / orderHistory /
 # userFundingFlows); also their default. Asking for more is a 400.
@@ -75,6 +81,10 @@ TIF_GTC = "Gtc"
 TIF_IOC = "Ioc"
 TIF_ALO = "Alo"
 TIF_FOK = "Fok"
+
+# Envelope ``sync`` flag: only these actions accept it. Every other action is
+# always answered synchronously and rejects the flag (400 SYNC_NOT_APPLICABLE).
+SYNC_ACTIONS = ("order", "cancel", "cancelByCloid", "cancelAll", "modify")
 
 # ``modify`` only accepts resting policies -- IOC/FOK never rest, so changing an
 # order into one is meaningless and rejected.

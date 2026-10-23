@@ -28,15 +28,22 @@ class FakeSession:
     def __init__(self) -> None:
         self.headers: Dict[str, str] = {}
         self.requests: List[Dict[str, Any]] = []
-        self._responses: List[FakeResponse] = []
+        self._responses: List[Any] = []
         self.default = FakeResponse({"status": "ok", "response": {"data": {}}})
 
     def queue(self, body: Any, status_code: int = 200) -> None:
         self._responses.append(FakeResponse(body, status_code))
 
-    def post(self, url: str, json: Optional[Any] = None, timeout: Optional[float] = None) -> FakeResponse:  # noqa: A002
+    def queue_error(self, exc: BaseException) -> None:
+        """Make the next POST raise ``exc`` instead of answering."""
+        self._responses.append(exc)
+
+    def post(self, url: str, json: Optional[Any] = None, timeout: Optional[Any] = None) -> FakeResponse:  # noqa: A002
         self.requests.append({"url": url, "json": json, "timeout": timeout})
-        return self._responses.pop(0) if self._responses else self.default
+        nxt = self._responses.pop(0) if self._responses else self.default
+        if isinstance(nxt, BaseException):
+            raise nxt
+        return nxt
 
     @property
     def last(self) -> Dict[str, Any]:

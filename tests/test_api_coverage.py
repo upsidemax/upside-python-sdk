@@ -1,12 +1,21 @@
 """Every documented endpoint is reachable, and nothing undocumented is sent.
 
-The three sets below are transcribed from the endpoint tables in the Upside API
-reference (2026-09-10). Each call below drives one SDK method through the fake
+The three sets below are the public endpoints of the Upside API reference
+(re-checked 2026-10-23). Each call below drives one SDK method through the fake
 session and records the ``action.type`` / query ``type`` / subscription ``type``
 it actually put on the wire; the test then asserts the recorded set equals the
-documented set. A new endpoint in the docs fails here until the SDK covers it,
-and a typo in a wire type fails here too.
+documented set. A typo in a wire type fails here.
+
+When the API documentation source is checked out next to this repository
+(``../api-docs``, or ``$UPSIDE_API_DOCS``), the sets are also compared with the
+contracts its public pages declare, so a newly published endpoint fails here
+until the SDK covers it. Without it that comparison is skipped.
 """
+
+import os
+import re
+from pathlib import Path
+from typing import Dict, Optional, Set
 
 import pytest
 
@@ -194,3 +203,42 @@ def test_every_documented_ws_channel_can_be_subscribed():
     assert all(s["method"] == "subscribe" for s in sent)
     # Distinct channels must not collide on one dispatch key.
     assert len(identifiers) == len(WS_SUBSCRIPTIONS)
+
+
+# -- cross-check against the documentation source ------------------------------
+def _api_docs_root() -> Optional[Path]:
+    configured = os.environ.get("UPSIDE_API_DOCS")
+    root = Path(configured) if configured else Path(__file__).resolve().parents[2] / "api-docs"
+    return root if (root / "docs").is_dir() else None
+
+
+_FRONTMATTER = re.compile(r"\A---\n(.*?)\n---\n", re.S)
+
+
+def _public_contracts(root: Path) -> Dict[str, Set[str]]:
+    """``{"exchange"|"info"|"ws": {name, ...}}`` declared by the public pages."""
+    found: Dict[str, Set[str]] = {"exchange": set(), "info": set(), "ws": set()}
+    for page in sorted((root / "docs").glob("**/index.md")):
+        match = _FRONTMATTER.match(page.read_text(encoding="utf-8"))
+        if not match:
+            continue
+        head = match.group(1)
+        if not re.search(r'^visibility:\s*"?public"?\s*$', head, re.M):
+            continue
+        line = re.search(r"^contract:\s*(.+)$", head, re.M)
+        if not line:
+            continue
+        for ref in re.findall(r"([a-z]+)/([A-Za-z0-9]+)", line.group(1)):
+            if ref[0] in found:
+                found[ref[0]].add(ref[1])
+    return found
+
+
+@pytest.mark.skipif(_api_docs_root() is None, reason="api-docs source not checked out next to this repo")
+def test_sdk_endpoint_sets_match_published_contracts():
+    root = _api_docs_root()
+    assert root is not None
+    published = _public_contracts(root)
+    assert published["exchange"] == EXCHANGE_ACTIONS
+    assert published["info"] == INFO_QUERIES
+    assert published["ws"] == WS_CHANNELS

@@ -4,26 +4,34 @@ Every method wraps a single ``/info`` call and returns the raw parsed JSON —
 see the per-query field references at https://docs.upsidemax.xyz/info/overview.
 Numbers come back as **raw integer strings**; scale them with the contract's
 ``priceScale`` / ``qtyScale`` from :meth:`configs`.
+
+Every query here is read-only, so a read timeout, a dropped connection, or a
+transient 502 / 503 / 504 is retried with backoff (see :class:`~upside.api.API`).
 """
 
 from typing import Any, Dict, List, Optional, Union
 
-from .api import API
+from .api import API, DEFAULT_BACKOFF, DEFAULT_MAX_RETRIES, Timeout
 from .utils import constants
 from .utils.types import Json, Subscription
 from .websocket_manager import WebsocketManager, WsCallback
 
 
 class Info(API):
-    """Client for market, account, and order reads, plus realtime streams."""
+    """Client for market, account, and order reads, plus realtime streams.
+
+    ``timeout`` / ``max_retries`` / ``backoff``: see :class:`~upside.api.API`.
+    """
 
     def __init__(
         self,
         base_url: Optional[str] = None,
-        timeout: Optional[float] = None,
+        timeout: Optional[Timeout] = None,
         skip_ws: bool = False,
+        max_retries: int = DEFAULT_MAX_RETRIES,
+        backoff: float = DEFAULT_BACKOFF,
     ) -> None:
-        super().__init__(base_url, timeout)
+        super().__init__(base_url, timeout, max_retries, backoff)
         self.ws_manager: Optional[WebsocketManager] = None
         if not skip_ws:
             self.ws_manager = WebsocketManager(self.base_url)
@@ -105,10 +113,23 @@ class Info(API):
     def user_orders(
         self,
         account_id: Union[int, str],
-        market_deployer_id: int,
+        market_deployer_id: int = 0,
         contract_id: int = 0,
     ) -> Dict[str, Any]:
-        """Active open orders; ``contract_id=0`` returns all contracts."""
+        """Active open orders, plus conditional orders not yet triggered.
+
+        ``market_deployer_id=0`` covers every deployer the account is enrolled
+        in; ``contract_id=0`` every contract. At most
+        ``constants.MAX_ORDERS_PER_QUERY`` orders come back: when ``truncated``
+        is true the list is incomplete, so query deployer by deployer rather
+        than treating a missing order as gone.
+
+        Field names differ from :meth:`order_history`: ``id`` / ``originalSize``
+        / ``size`` (remaining) / ``timestamp`` here are ``orderId`` / ``origQty``
+        / ``leavesQty`` / ``createdTimeMs`` there. ``nonce`` here is an
+        account-level command sequence, not your signing nonce — correlate by
+        ``cloid``.
+        """
         return self._info(
             {
                 "type": "userOrders",
@@ -119,7 +140,10 @@ class Info(API):
         )
 
     def orders_by_ids(self, market_deployer_id: int, order_ids: List[Union[int, str]]) -> Dict[str, Any]:
-        """Look up orders by exchange order id (missing ids are omitted)."""
+        """Look up orders by exchange order id (missing ids are omitted).
+
+        Same order fields and ``truncated`` flag as :meth:`user_orders`.
+        """
         return self._info(
             {
                 "type": "ordersByIds",
@@ -134,7 +158,10 @@ class Info(API):
         market_deployer_id: int,
         cloids: List[Union[int, str]],
     ) -> Dict[str, Any]:
-        """Look up orders by client order id (missing cloids are omitted)."""
+        """Look up orders by client order id (missing cloids are omitted).
+
+        Same order fields and ``truncated`` flag as :meth:`user_orders`.
+        """
         return self._info(
             {
                 "type": "ordersByCloids",

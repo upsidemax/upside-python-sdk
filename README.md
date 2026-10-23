@@ -10,7 +10,8 @@ and realtime WebSocket streams. Authentication is EIP-712 wallet-signed
 - Raw-dict responses, `TypedDict` inputs, full type hints (ships `py.typed`).
 - Agent (API-wallet) delegation, TP/SL, leverage/margin, and collateral actions.
 
-> The default environment is the **UAT testnet** (`https://dev.upsidemax.xyz`).
+> The default environment is the **Upside Devnet** (`https://dev.upsidemax.xyz`,
+> `constants.DEVNET_API_URL`; the older `UAT_API_URL` name still works).
 > Contract IDs, scales, and tick/step sizes are server-assigned — always read
 > them from `configs`, never hardcode.
 
@@ -30,16 +31,16 @@ from upside import Info, Exchange
 from upside.utils import constants
 
 # --- reads (no signing) ---
-info = Info(base_url=constants.UAT_API_URL)
+info = Info(base_url=constants.DEVNET_API_URL)
 cfg = info.configs()
 contract = next(c for c in cfg["contracts"] if c["status"] == "Active")
 asset = contract["contractId"]
 print(info.market_state(asset))
 
 # --- writes (EIP-712 signed) ---
-exchange = Exchange("0x<private-key>", base_url=constants.UAT_API_URL)
+exchange = Exchange("0x<private-key>", base_url=constants.DEVNET_API_URL)
 
-# Register (UAT requires an invite code from the Upside team). A 10,000 USDC
+# Register (Devnet requires an invite code from the Upside team). A 10,000 USDC
 # test airdrop lands within ~10s.
 exchange.register_account(invite_code="<invite-code>")
 
@@ -59,7 +60,7 @@ info.l2_book(asset)                             # full order book snapshot
 info.market_state(asset)                        # mark/oracle/last price, funding
 info.candle_snapshot(asset, "1m", start, end)   # historical OHLCV
 info.user_account(account_id, market_deployer_id)
-info.user_orders(account_id, market_deployer_id, contract_id=0)
+info.user_orders(account_id, market_deployer_id=0, contract_id=0)   # 0 = all; check "truncated"
 info.orders_by_ids(market_deployer_id, ["8280"])
 info.orders_by_cloids(account_id, market_deployer_id, ["1778844423064"])
 info.ticker(asset)                              # 24h rolling stats (omit asset = all markets)
@@ -121,23 +122,70 @@ yourself (`mark price ± marketSlippageBps/1e4`) — the server derives none. Re
 your account's cap from `Info.user_account`'s `marketSlippageBps` and set it
 with `update_slippage_setting`.
 
-### Orders and cancels answer 200 *or* 202
+### Orders and cancels: pick `sync`
 
 The order/cancel family (`order`, `cancel`, `cancelByCloid`, `cancelAll`,
-`modify`) returns **either** HTTP 200 with a `statuses[]` entry per submitted
-item (`resting` / `filled` / `error`), **or** HTTP 202 with
-`{"status": "accepted", "response": {"type": "accepted", "data": {"count": n}}}`
-— where `type` is the literal `"accepted"`, not the action name. Handle both.
-On 202 the per-item outcome arrives on the `orderUpdates` channel; correlate by
-`cloid`, or by `n` (your nonce) + `si` (index within the batch). A trigger order
-is the exception: it answers with the TP/SL receipt
+`modify`) has two receipt shapes, chosen per request with `sync` (an unsigned
+envelope flag — the signature is the same either way):
+
+```python
+exchange = Exchange(key, sync=True)                    # default for this client
+exchange.order(asset=1, is_buy=True, size="10", price="50")
+exchange.cancel(asset=1, oid=15, sync=False)           # per-call override
+```
+
+- `sync=True` — HTTP 200 once the action has executed. `order` / `cancel` /
+  `cancelByCloid` / `modify` return `response.data.statuses[]`, one entry per
+  submitted item in request order (`modify`: exactly one) — `{"resting": {"oid"}}`,
+  `{"filled": {"totalSz", "avgPx", "oid"}}` or `{"error": "..."}`. `cancelAll`
+  returns `{"limitCancelled": n, "conditionalCancelled": m}` instead (no `statuses`).
+- `sync=False` — HTTP 202 straight away with
+  `{"status": "accepted", "response": {"type": "accepted", "data": {"count": 1}}}`;
+  the per-item outcome arrives on the `orderUpdates` channel, correlated by
+  `cloid`, or by `n` (your nonce) + `si` (index within the batch).
+- not set — the server's default (currently 202). Set it explicitly if you parse
+  the response.
+
+A trigger order answers with the TP/SL receipt
 `{"type": "tpSl", "data": {"tpOrderId": n, "slOrderId": n}}`. Every other action
-responds synchronously.
+is always synchronous and rejects `sync`, so the SDK only sends it on these five.
+
+Client order ids (`cloid`) are positive int64 decimal strings; `Cloid` and every
+`cloid=` argument enforce that before signing.
+
+### Timeouts and retries
+
+Every request has a timeout (`(5, 10)` seconds connect/read by default; pass
+`timeout=`). Failures are retried with exponential backoff (`max_retries=3`,
+`backoff=0.5` s) **only where resending is safe**:
+
+- **`/info`** — read-only, so a read timeout, a dropped connection, or a
+  transient `502` / `503` / `504` is retried. `503 NOT_READY` (no order book yet)
+  is raised at once. If every attempt fails, the `requests` exception (or
+  `ServerError`) propagates.
+- **`/exchange`** — retried only when the request never left your machine
+  (connection refused, DNS failure, connect timeout). After that, resending the
+  same signed envelope reuses its nonce and is rejected with `DUPLICATE_NONCE`
+  *even if the first attempt executed*, so a read timeout raises
+  `OutcomeUnknownError` (carrying `nonce` and `action_type`) instead. A `504
+  DOWNSTREAM_TIMEOUT` on a `sync=True` request means the same thing. Confirm the
+  outcome — `orderUpdates`, `userOrders`, `ordersByCloids` — before signing a
+  new request.
+
+```python
+from upside import OutcomeUnknownError, ServerError
+
+try:
+    exchange.order(asset=1, is_buy=True, size="10", price="50", cloid=cloid, sync=True)
+except OutcomeUnknownError:
+    found = info.orders_by_cloids(account_id, 0, [cloid])     # did it land?
+```
 
 ### HTTP 200 ≠ success
 
-Gateway failures (bad signature, reused nonce, rate limit) raise `ClientError`
-(4xx) / `ServerError` (5xx). Business rejections come back as HTTP 200 — a per-item
+Gateway failures (bad signature, reused nonce, invalid parameter) raise
+`ClientError` (4xx) / `ServerError` (5xx); an `INVALID_PARAM` rejection lists the
+offending fields in `.errors`. Business rejections come back as HTTP 200 — a per-item
 `error` string in `statuses[]`, or a non-zero `errorCode` in `response.data`.
 Always inspect them.
 
@@ -148,7 +196,7 @@ server routes agent-signed actions to the master account.
 
 ```python
 response, agent_key = master.approve_agent(agent_name="bot1")   # generates a fresh key
-agent = Exchange(agent_key, base_url=constants.UAT_API_URL, account_id=master.account_id)
+agent = Exchange(agent_key, base_url=constants.DEVNET_API_URL, account_id=master.account_id)
 agent.order(asset=1, is_buy=True, size="10", price="50")
 master.revoke_agent(agent.address)
 ```
@@ -156,9 +204,10 @@ master.revoke_agent(agent.address)
 ## WebSocket streams
 
 ```python
-info = Info(base_url=constants.UAT_API_URL)          # WS starts automatically
+info = Info(base_url=constants.DEVNET_API_URL)          # WS starts automatically
 
-sid = info.subscribe({"type": "l2Book", "asset": "1"}, lambda m: print(m["data"]["bookVersion"]))
+sid = info.subscribe({"type": "l2Book", "asset": "1"}, lambda m: print(m["data"]["levels"][0][:1]))
+info.subscribe({"type": "l2Book", "asset": "1", "group": 1000}, print)  # a price grouping from configs digitMerge
 info.subscribe({"type": "trades", "asset": "1"}, print)
 info.subscribe({"type": "orderUpdates", "user": "0x<address>"}, print)   # private: pass the wallet address
 info.subscribe({"type": "userFills", "user": "0x<address>"}, print)
@@ -171,8 +220,10 @@ info.close()
 Channels: `l2Book`, `bbo`, `trades`, `candle`, `ticker`, `allMarkets`, `config`
 (public) and `orderUpdates`, `openOrders`, `userFills`, `userAccount`
 (per-address; `userAccount` also takes `marketDeployerId`, since the account view
-differs per deployer). The client pings every 30s and auto-reconnects, replaying
-subscriptions.
+differs per deployer). `l2Book` optionally takes `group`, one of the contract's
+`digitMerge` values; each grouping is a separate stream, and a `GroupRemoved`
+frame (the grouping was dropped from the config) ends it. The client pings every
+30s and auto-reconnects, replaying subscriptions.
 
 Several channels open with a snapshot frame whose shape differs from the
 increments that follow — `candle` (a batch of bars under `asset`/`interval`),

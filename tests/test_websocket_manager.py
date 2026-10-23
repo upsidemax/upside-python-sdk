@@ -1,5 +1,7 @@
 """WebSocket identifier mapping and subscription-registry tests (no real socket)."""
 
+import json
+
 import pytest
 
 from upside.utils.error import WebsocketError
@@ -69,8 +71,8 @@ def test_subscribe_dispatch_without_socket():
     sub_id = manager.subscribe(sub, lambda m: received.append(m))
     assert sent[-1] == {"method": "subscribe", "subscription": {"type": "l2Book", "asset": "1"}}
 
-    manager._on_message(None, '{"channel": "l2Book", "data": {"asset": "1", "bookVersion": 5}}')
-    assert received and received[0]["data"]["bookVersion"] == 5
+    manager._on_message(None, '{"channel": "l2Book", "data": {"asset": "1", "time": 5}}')
+    assert received and received[0]["data"]["time"] == 5
 
     # Second callback for the same identifier does NOT re-send subscribe.
     before = len(sent)
@@ -289,3 +291,49 @@ def test_user_account_frame_without_a_deployer_still_dispatches():
     manager._on_message(None, '{"msg":"UserAccount","channel":"userAccount.0xabc","data":{"crossEquity":"7"}}')
     assert len(first) == 1 and len(second) == 1
     assert other == []  # a different address is still untouched
+
+
+# -- l2Book price groupings ----------------------------------------------------
+def _ready_manager():
+    manager = WebsocketManager("https://dev.upsidemax.xyz")
+    sent = []
+    manager._send = sent.append  # type: ignore[method-assign]
+    manager.ws_ready = True
+    return manager, sent
+
+
+def test_l2book_group_is_its_own_channel():
+    raw = {"type": "l2Book", "asset": "1"}
+    grouped = {"type": "l2Book", "asset": "1", "group": 1000}
+    assert subscription_to_identifier(raw) == "l2Book:1"
+    assert subscription_to_identifier({"type": "l2Book", "asset": "1", "group": 0}) == "l2Book:1"
+    assert subscription_to_identifier(grouped) == "l2Book:1,1000"
+
+    manager, sent = _ready_manager()
+    got_raw, got_grouped = [], []
+    manager.subscribe(raw, got_raw.append)
+    manager.subscribe(grouped, got_grouped.append)
+    assert sent[-1] == {"method": "subscribe", "subscription": grouped}  # group goes on the wire
+
+    raw_frame = {"channel": "l2Book", "data": {"asset": "1", "group": 0, "levels": [[], []]}}
+    grouped_frame = {"channel": "l2Book", "data": {"asset": "1", "group": 1000, "levels": [[], []]}}
+    manager._on_message(None, json.dumps(raw_frame))
+    manager._on_message(None, json.dumps(grouped_frame))
+    assert got_raw == [raw_frame]
+    assert got_grouped == [grouped_frame]
+
+
+def test_group_removed_reaches_subscriber_and_is_not_replayed():
+    manager, sent = _ready_manager()
+    got = []
+    grouped = {"type": "l2Book", "asset": "1", "group": 1000}
+    manager.subscribe(grouped, got.append)
+    manager.subscribe({"type": "l2Book", "asset": "1"}, lambda _m: None)
+
+    removed = {"msg": "GroupRemoved", "channel": "l2Book.1.1000", "data": {"asset": "1", "group": 1000}, "ts": 1}
+    manager._on_message(None, json.dumps(removed))
+    assert got == [removed]
+
+    sent.clear()
+    manager._on_open(None)  # reconnect
+    assert [s["subscription"] for s in sent] == [{"type": "l2Book", "asset": "1"}]

@@ -600,3 +600,64 @@ def test_signature_chain_id_is_omitted_on_agent_path_actions(fake_session):
     assert "signatureChainId" not in fake_session.last["json"]
     ex.revoke_agent("0x" + "cd" * 20)  # typed path
     assert fake_session.last["json"]["signatureChainId"] == "0x1"
+
+
+# -- envelope sync flag --------------------------------------------------------
+SYNC_CALLS = {
+    "order": lambda ex, **kw: ex.order(asset=1, is_buy=True, size="1", price="50", **kw),
+    "market_order": lambda ex, **kw: ex.market_order(asset=1, is_buy=True, size="1", price="55", **kw),
+    "trigger_order": lambda ex, **kw: ex.trigger_order(
+        asset=1, is_buy=False, size="1", price="49", trigger_px="50", tpsl="sl", **kw
+    ),
+    "cancel": lambda ex, **kw: ex.cancel(asset=1, oid=3, **kw),
+    "cancel_by_cloid": lambda ex, **kw: ex.cancel_by_cloid(asset=1, cloid=123, **kw),
+    "cancel_all": lambda ex, **kw: ex.cancel_all(asset=1, **kw),
+    "modify": lambda ex, **kw: ex.modify(asset=1, oid=12345, price="150", **kw),
+}
+
+
+def test_sync_omitted_by_default(exchange, fake_session):
+    for call in SYNC_CALLS.values():
+        call(exchange)
+        assert "sync" not in fake_session.last["json"]
+
+
+@pytest.mark.parametrize("name", sorted(SYNC_CALLS))
+@pytest.mark.parametrize("value", [True, False])
+def test_sync_rides_on_the_envelope_unsigned(exchange, fake_session, name, value):
+    SYNC_CALLS[name](exchange, sync=value)
+    env = fake_session.last["json"]
+    assert env["sync"] is value
+    assert "sync" not in env["action"]
+    # The signature covers the action only, so the same signer is recovered.
+    from upside.utils.signing import eip712_digest
+
+    sig = env["signature"]
+    vrs = (sig["v"], int(sig["r"], 16), int(sig["s"], 16))
+    digest = eip712_digest(dict(env["action"]), env["nonce"])
+    assert Account._recover_hash(digest, vrs=vrs).lower() == ADDRESS
+
+
+def test_instance_sync_default_and_per_call_override(fake_session):
+    ex = Exchange(PRIVATE_KEY, base_url="https://dev.upsidemax.xyz", sync=True)
+    ex.session = fake_session
+    ex.cancel(asset=1, oid=3)
+    assert fake_session.last["json"]["sync"] is True
+    ex.cancel(asset=1, oid=3, sync=False)
+    assert fake_session.last["json"]["sync"] is False
+
+
+def test_instance_sync_not_sent_on_other_actions(fake_session):
+    """Any other action rejects the flag outright (400 SYNC_NOT_APPLICABLE)."""
+    ex = Exchange(PRIVATE_KEY, base_url="https://dev.upsidemax.xyz", sync=True)
+    ex.session = fake_session
+    ex.update_leverage(asset=1, leverage=5)
+    ex.tp_sl(asset=1, tp_price="90000", tp_limit_price="90000", tp_order_type=1)
+    ex.cancel_conditional(oid=1)
+    ex.lock_collateral(1, 1, "1000")
+    assert all("sync" not in r["json"] for r in fake_session.requests)
+
+
+def test_sync_must_be_a_bool(exchange):
+    with pytest.raises(TypeError):
+        exchange.cancel(asset=1, oid=3, sync="true")  # type: ignore[arg-type]

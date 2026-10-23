@@ -56,6 +56,12 @@ def test_user_orders_request(info, fake_session):
     }
 
 
+def test_user_orders_defaults_to_every_deployer(info, fake_session):
+    """marketDeployerId 0 asks for every deployer the account is enrolled in."""
+    info.user_orders(5)
+    assert body(fake_session)["marketDeployerId"] == 0
+
+
 def test_orders_by_ids_stringifies(info, fake_session):
     info.orders_by_ids(1, [8280, "8281"])
     assert body(fake_session)["orderIds"] == ["8280", "8281"]

@@ -107,12 +107,15 @@ class Subscription(TypedDict):
     """A WebSocket subscription object (the ``subscription`` field on the wire).
 
     ``asset`` is a decimal string contract id; ``user`` is a lowercase wallet
-    address. ``marketDeployerId`` is required by ``userAccount`` only. Only the
-    fields relevant to ``type`` are read.
+    address. ``marketDeployerId`` is required by ``userAccount`` only.
+    ``group`` (``l2Book`` only, optional) selects a price grouping — one of the
+    contract's ``configs`` ``digitMerge`` values; omit it for the raw book.
+    Only the fields relevant to ``type`` are read.
     """
 
     type: str
     asset: NotRequired[str]
+    group: NotRequired[int]
     interval: NotRequired[str]
     user: NotRequired[str]
     marketDeployerId: NotRequired[int]
