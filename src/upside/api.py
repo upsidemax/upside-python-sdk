@@ -29,9 +29,10 @@ happens when the network fails depends on whether resending is safe:
 
 import logging
 import random
+import ssl
 import time
 from json import JSONDecodeError
-from typing import Any, Callable, Optional, Tuple, Union, cast
+from typing import Any, Callable, List, Optional, Tuple, Union, cast
 
 import requests
 from urllib3.exceptions import NewConnectionError
@@ -65,6 +66,11 @@ _RETRYABLE_TRANSPORT = (
     requests.exceptions.Timeout,
     requests.exceptions.ChunkedEncodingError,
 )
+
+# Failures that can happen after the request went out. Everything else a
+# ``requests`` call raises (a URL without a scheme, an invalid header, a body
+# that cannot be serialized) happens before sending.
+_MAYBE_DELIVERED = _RETRYABLE_TRANSPORT + (requests.exceptions.ContentDecodingError,)
 
 
 class API:
@@ -108,7 +114,7 @@ class API:
                 if attempt < self.max_retries and (not_sent or (idempotent and isinstance(exc, _RETRYABLE_TRANSPORT))):
                     attempt = self._wait_before_retry(attempt, url_path, exc)
                     continue
-                if not idempotent and not not_sent:
+                if not idempotent and not not_sent and _maybe_delivered(exc):
                     raise OutcomeUnknownError(
                         f"POST {url_path}: no response ({type(exc).__name__}); the request may have executed",
                     ) from exc
@@ -171,6 +177,32 @@ def _never_sent(exc: requests.exceptions.RequestException) -> bool:
     if isinstance(exc, requests.exceptions.ConnectionError):
         cause = exc.args[0] if exc.args else None
         return isinstance(getattr(cause, "reason", None), NewConnectionError)
+    return False
+
+
+def _maybe_delivered(exc: requests.exceptions.RequestException) -> bool:
+    """Whether a failed request may have reached the server (see ``_never_sent``).
+
+    A TLS error can come mid-response too, so only a rejected server
+    certificate — which fails the handshake, before anything is sent — counts
+    as undelivered.
+    """
+    return isinstance(exc, _MAYBE_DELIVERED) and not _caused_by(exc, ssl.SSLCertVerificationError)
+
+
+def _caused_by(exc: BaseException, kind: type) -> bool:
+    """Whether ``kind`` appears in the chain ``requests`` / ``urllib3`` wrap errors in."""
+    seen = set()
+    pending: List[object] = [exc]
+    while pending:
+        err = pending.pop()
+        if not isinstance(err, BaseException) or id(err) in seen:
+            continue
+        if isinstance(err, kind):
+            return True
+        seen.add(id(err))
+        pending.extend(err.args)
+        pending.extend((getattr(err, "reason", None), err.__cause__, err.__context__))
     return False
 
 

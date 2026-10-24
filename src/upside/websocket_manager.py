@@ -165,7 +165,7 @@ class WebsocketManager(threading.Thread):
         # http(s)://host  ->  ws(s)://host/ws
         self.ws_url = "ws" + base_url.rstrip("/")[len("http") :] + "/ws"
         self.ping_interval = ping_interval
-        # A User-Agent header is required to pass the CloudFront edge in front of the API.
+        # The API edge refuses WebSocket upgrades that carry no User-Agent header.
         self._headers = [f"User-Agent: {user_agent}"]
         self._logger = logging.getLogger("upside.ws")
 
@@ -265,7 +265,13 @@ class WebsocketManager(threading.Thread):
                     self._logger.exception("error in ws error callback")
             return
 
-        identifier = ws_message_to_identifier(message)
+        try:
+            identifier = ws_message_to_identifier(message)
+        except Exception:
+            # A frame we cannot route is dropped here: letting the exception
+            # escape would reach _on_error as if the connection had failed.
+            self._logger.warning("dropping unroutable ws frame: %s", raw[:120], exc_info=True)
+            return
         if identifier is None:
             return
         with self._lock:
@@ -286,9 +292,13 @@ class WebsocketManager(threading.Thread):
     def _on_error(self, _ws: Any, error: Any) -> None:
         # With auto-reconnect, websocket-client reports a dropped connection
         # here without calling on_close; stop sending until on_open fires again.
+        # It also reports an exception raised by any of our callbacks here, on
+        # a connection that is still up — that must not stop sends, or every
+        # later subscribe would wait for a reconnect that never comes.
         self._logger.warning("websocket error: %s", error)
-        with self._lock:
-            self.ws_ready = False
+        if isinstance(error, (websocket.WebSocketException, OSError)):
+            with self._lock:
+                self.ws_ready = False
 
     def _on_close(self, _ws: Any, status_code: Any, msg: Any) -> None:
         self._logger.debug("websocket closed: %s %s", status_code, msg)

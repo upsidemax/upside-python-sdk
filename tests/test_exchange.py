@@ -786,3 +786,17 @@ def test_register_rejects_a_foreign_address(exchange, fake_session):
     with pytest.raises(ValueError, match="own address"):
         exchange.register_account(address="0x" + "ab" * 20)
     assert fake_session.requests == []
+
+
+@pytest.mark.parametrize("field", ["size", "price"])
+def test_amount_above_int64_rejected(exchange, field):
+    kwargs = {"asset": 1, "is_buy": True, "size": "1", "price": "50"}
+    kwargs[field] = str(2**63)
+    with pytest.raises(ValueError, match=field):
+        exchange.order(**kwargs)
+
+
+@pytest.mark.parametrize("value", ["²", "١٢", "--5"])
+def test_non_ascii_or_malformed_digits_rejected(exchange, value):
+    with pytest.raises(ValueError, match="raw integer string"):
+        exchange.order(asset=1, is_buy=True, size=value, price="50")

@@ -228,3 +228,38 @@ def test_exchange_refused_connection_is_retried():
     with pytest.raises(requests.exceptions.ConnectionError):
         ex.cancel(asset=1, oid=1)
     assert len(slept) == 2  # safe to resend: nothing was delivered
+
+
+# -- failures before sending are not "outcome unknown" ------------------------
+def test_exchange_unsent_request_error_is_raised_as_is(fake_session):
+    ex = Exchange(PRIVATE_KEY, base_url="dev.upsidemax.xyz", max_retries=0)  # no scheme
+    with pytest.raises(requests.exceptions.MissingSchema):
+        ex.cancel(asset=1, oid=7)
+
+
+def test_exchange_rejected_certificate_is_raised_as_is(exchange, fake_session):
+    import ssl
+
+    from urllib3.exceptions import MaxRetryError, SSLError
+
+    _no_sleep(exchange)
+    cause = MaxRetryError(None, "https://dev.upsidemax.xyz/exchange", SSLError(ssl.SSLCertVerificationError(1)))
+    fake_session.queue_error(requests.exceptions.SSLError(cause))
+    with pytest.raises(requests.exceptions.SSLError):
+        exchange.cancel(asset=1, oid=7)
+    assert len(fake_session.requests) == 1
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        requests.exceptions.SSLError("record layer failure"),  # mid-response
+        requests.exceptions.ContentDecodingError("bad gzip"),
+    ],
+)
+def test_exchange_errors_after_sending_are_outcome_unknown(exchange, fake_session, exc):
+    _no_sleep(exchange)
+    fake_session.queue_error(exc)
+    with pytest.raises(OutcomeUnknownError):
+        exchange.cancel(asset=1, oid=7)
+    assert len(fake_session.requests) == 1

@@ -1,8 +1,7 @@
-"""EIP-712 digests pinned by the server's own golden-vector tests.
+"""EIP-712 digests pinned to the server's reference vectors.
 
-Values are copied from l1chain ``Eip712TypedGoldenVectorTest`` and
-``CanonicalGoldenVectorTest`` (origin/qa, 2026-10-23). A mismatch here means the
-server would recover a different signer: ``401 SIGNATURE_INVALID``.
+Values are the server's reference vectors (2026-10-23). A mismatch here means
+the server would recover a different signer: ``401 SIGNATURE_INVALID``.
 """
 
 import pytest

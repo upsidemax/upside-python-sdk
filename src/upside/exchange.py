@@ -23,9 +23,9 @@ envelope's ``sync`` flag (unsigned; see the ``sync`` argument):
   ``{"status": "accepted", "response": {"type": "accepted", "data": {"count": 1}}}``.
   The per-item outcome arrives on the ``orderUpdates`` WebSocket channel,
   correlated by ``cloid`` or by ``n`` (your nonce) + ``si`` (index in the batch).
-  The gateway does **not** validate parameters on this path: a request the
-  chain cannot parse is dropped with no ``orderUpdates`` entry at all. This SDK
-  checks every field it sends before signing for that reason.
+  A malformed request may still be answered 202 here and then produce no
+  ``orderUpdates`` entry, so this SDK checks every field it sends before
+  signing.
 * omitted (``None``, the default) — the deployment's default, currently 202.
 
 A synchronous request that is not answered within 2 s returns
@@ -745,7 +745,9 @@ def _as_int(name: str, value: Any) -> int:
     if isinstance(value, bool) or not isinstance(value, (int, str)):
         raise TypeError(f"{name} must be an int or a decimal string, got {value!r}")
     text = str(value).strip()
-    if not text.lstrip("-").isdigit():
+    digits = text[1:] if text.startswith("-") else text
+    # ASCII only: str.isdigit() also accepts "²" and non-Latin digits.
+    if not (digits.isascii() and digits.isdigit()):
         raise ValueError(f"{name} must be a raw integer string, got {value!r}")
     return int(text)
 
@@ -776,15 +778,15 @@ def _non_negative_int(name: str, value: Any) -> int:
 def _amount(name: str, value: Any) -> str:
     """A raw (scaled) non-negative integer amount, as its wire decimal string."""
     number = _as_int(name, value)
-    if number < 0:
-        raise ValueError(f"{name} must not be negative, got {value!r}")
+    if not 0 <= number <= _INT64_MAX:
+        raise ValueError(f"{name} must be in [0, {_INT64_MAX}], got {value!r}")
     return str(number)
 
 
 def _positive_amount(name: str, value: Any) -> str:
     number = _as_int(name, value)
-    if number <= 0:
-        raise ValueError(f"{name} must be a positive raw integer string, got {value!r}")
+    if not 0 < number <= _INT64_MAX:
+        raise ValueError(f"{name} must be a positive raw integer string up to {_INT64_MAX}, got {value!r}")
     return str(number)
 
 

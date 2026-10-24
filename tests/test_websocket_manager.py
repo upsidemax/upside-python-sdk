@@ -399,3 +399,26 @@ def test_bad_candle_interval_rejected_before_sending():
 def test_ping_interval_must_leave_room_for_the_pong_timeout():
     with pytest.raises(ValueError):
         WebsocketManager("https://dev.upsidemax.xyz", ping_interval=5)
+
+
+@pytest.mark.parametrize(
+    "frame",
+    [
+        {"channel": "l2Book", "data": None},
+        {"channel": "l2Book", "data": {"asset": "1", "group": "x"}},
+    ],
+)
+def test_unroutable_frame_keeps_a_live_connection_ready(frame):
+    manager, sent = _ready_manager()
+    # Drive it the way websocket-client does: an exception escaping on_message
+    # is reported to on_error.
+    manager.ws._callback(manager.ws.on_message, json.dumps(frame))
+    assert manager.ws_ready is True
+    manager.subscribe({"type": "bbo", "asset": "1"}, lambda _m: None)
+    assert sent == [{"method": "subscribe", "subscription": {"type": "bbo", "asset": "1"}}]
+
+
+def test_callback_exception_reported_to_on_error_keeps_ready():
+    manager, _sent = _ready_manager()
+    manager._on_error(None, ValueError("raised by a callback"))
+    assert manager.ws_ready is True

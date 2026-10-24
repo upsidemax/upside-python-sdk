@@ -145,11 +145,10 @@ exchange.cancel(asset=1, oid=15, sync=False)           # per-call override
 - `sync=False` — HTTP 202 straight away with
   `{"status": "accepted", "response": {"type": "accepted", "data": {"count": 1}}}`;
   the per-item outcome arrives on the `orderUpdates` channel, correlated by
-  `cloid`, or by `n` (your nonce) + `si` (index within the batch). The gateway
-  does not validate parameters on this path — a request the chain cannot parse
-  is dropped with no `orderUpdates` entry — so the SDK checks every field
-  (ids, sizes, prices, TIF, types) before signing and raises `ValueError` /
-  `TypeError` instead.
+  `cloid`, or by `n` (your nonce) + `si` (index within the batch). A malformed
+  request may still be answered 202 here and then produce no `orderUpdates`
+  entry, so the SDK checks every field (ids, sizes, prices, TIF, types) before
+  signing and raises `ValueError` / `TypeError` instead.
 - not set — the server's default (currently 202). Set it explicitly if you parse
   the response.
 
