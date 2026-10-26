@@ -11,7 +11,7 @@ and realtime WebSocket streams. Authentication is EIP-712 wallet-signed
 - Agent (API-wallet) delegation, TP/SL, leverage/margin, and collateral actions.
 
 > The default environment is the **Upside Devnet** (`https://dev.upsidemax.xyz`,
-> `constants.DEVNET_API_URL`; the older `UAT_API_URL` name still works).
+> `constants.DEVNET_API_URL`).
 > Contract IDs, scales, and tick/step sizes are server-assigned — always read
 > them from `configs`, never hardcode.
 

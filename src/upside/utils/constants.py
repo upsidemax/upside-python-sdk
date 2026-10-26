@@ -11,10 +11,6 @@ them from ``Info.configs()`` rather than hardcoding.
 # environments.
 DEVNET_API_URL = "https://dev.upsidemax.xyz"
 
-# Deprecated aliases kept for callers written against the earlier names.
-UAT_API_URL = DEVNET_API_URL
-QA_API_URL = DEVNET_API_URL
-
 # EIP-712 signing domain (see https://docs.upsidemax.xyz/guide/authentication).
 CHAIN_ID = 9767
 DOMAIN_NAME = "Exchange"
