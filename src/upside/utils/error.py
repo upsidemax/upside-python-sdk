@@ -1,6 +1,6 @@
-"""Exception hierarchy for the Upside SDK.
+"""Exception hierarchy for the UpsideMAX SDK.
 
-Upside reports failures at three levels:
+UpsideMAX reports failures at three levels:
 
 * **HTTP / gateway level** — a non-2xx response (or a body with
   ``"status": "error"``) carrying a machine ``code`` and ``message``. These

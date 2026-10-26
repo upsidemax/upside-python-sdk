@@ -1,4 +1,4 @@
-"""Shared types for the Upside SDK.
+"""Shared types for the UpsideMAX SDK.
 
 The SDK keeps two vocabularies:
 
@@ -124,7 +124,7 @@ class Subscription(TypedDict):
 class Cloid:
     """A client order id: a positive ``int64`` sent as a decimal string.
 
-    Upside represents client order ids as ``int64`` decimal strings (unlike
+    UpsideMAX represents client order ids as ``int64`` decimal strings (unlike
     Hyperliquid's 128-bit hex cloids). Use this wrapper to build one from an
     int, a timestamp, or a validated string.
     """

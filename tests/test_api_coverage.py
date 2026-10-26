@@ -1,6 +1,6 @@
 """Every documented endpoint is reachable, and nothing undocumented is sent.
 
-The three sets below are the public endpoints of the Upside API reference
+The three sets below are the public endpoints of the UpsideMAX API reference
 (re-checked 2026-10-23). Each call below drives one SDK method through the fake
 session and records the ``action.type`` / query ``type`` / subscription ``type``
 it actually put on the wire; the test then asserts the recorded set equals the

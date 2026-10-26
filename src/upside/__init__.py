@@ -1,4 +1,4 @@
-"""Upside Python SDK — REST (`/info`, `/exchange`) and WebSocket client.
+"""UpsideMAX Python SDK — REST (`/info`, `/exchange`) and WebSocket client.
 
 Quick start::
 

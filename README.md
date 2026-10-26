@@ -1,6 +1,6 @@
-# Upside Python SDK
+# UpsideMAX Python SDK
 
-A Python client for the [Upside](https://docs.upsidemax.xyz) perpetuals
+A Python client for the [UpsideMAX](https://docs.upsidemax.xyz) perpetuals
 exchange — REST reads (`POST /info`), signed writes (`POST /exchange`),
 and realtime WebSocket streams. Authentication is EIP-712 wallet-signed
 (secp256k1) rather than API keys.
@@ -10,7 +10,7 @@ and realtime WebSocket streams. Authentication is EIP-712 wallet-signed
 - Raw-dict responses, `TypedDict` inputs, full type hints (ships `py.typed`).
 - Agent (API-wallet) delegation, TP/SL, leverage/margin, and collateral actions.
 
-> The default environment is the **Upside Devnet** (`https://dev.upsidemax.xyz`,
+> The default environment is the **UpsideMAX Devnet** (`https://dev.upsidemax.xyz`,
 > `constants.DEVNET_API_URL`).
 > Contract IDs, scales, and tick/step sizes are server-assigned — always read
 > them from `configs`, never hardcode.
@@ -40,8 +40,8 @@ print(info.market_state(asset))
 # --- writes (EIP-712 signed) ---
 exchange = Exchange("0x<private-key>", base_url=constants.DEVNET_API_URL)
 
-# Register (Devnet requires an invite code from the Upside team). A 10,000 USDC
-# test airdrop lands within ~10s.
+# Register (Devnet requires an invite code from the UpsideMAX team). A test airdrop
+# follows once this call has returned 200.
 exchange.register_account(invite_code="<invite-code>")
 
 # Place a resting limit buy. Prices/sizes are raw integer strings — scale them

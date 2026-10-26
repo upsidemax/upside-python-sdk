@@ -1,11 +1,11 @@
-"""Environment URLs and protocol constants for the Upside API.
+"""Environment URLs and protocol constants for the UpsideMAX API.
 
 Contract IDs, coin IDs, price/quantity scales, and tick/step sizes are **not**
 constants — they are server-assigned and differ per environment. Always read
 them from ``Info.configs()`` rather than hardcoding.
 """
 
-# REST + WebSocket base URL of the Upside Devnet. The base URL is the scheme +
+# REST + WebSocket base URL of the UpsideMAX Devnet. The base URL is the scheme +
 # host only; the SDK appends ``/info``, ``/exchange`` for REST and derives the
 # ``/ws`` path. Pass a different ``base_url`` to Info/Exchange for other
 # environments.

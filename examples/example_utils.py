@@ -1,8 +1,8 @@
 """Shared bootstrap for the example scripts.
 
 Copy ``config.json.example`` to ``config.json`` and fill in your test wallet's
-``private_key`` and (for Devnet) an ``invite_code`` from the Upside team. All
-examples run against the Upside Devnet by default.
+``private_key`` and (for Devnet) an ``invite_code`` from the UpsideMAX team. All
+examples run against the UpsideMAX Devnet by default.
 """
 
 import json

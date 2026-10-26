@@ -1,4 +1,4 @@
-"""Threaded WebSocket client for the Upside realtime API.
+"""Threaded WebSocket client for the UpsideMAX realtime API.
 
 Runs ``websocket-client``'s ``run_forever`` on a background thread with built-in
 ping and auto-reconnect. Subscriptions use the v0.14 protocol
