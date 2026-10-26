@@ -56,6 +56,12 @@ strict_equality = true
 check_untyped_defs = true
 ignore_missing_imports = true
 
+# Third-party sources newer than our 3.9 target (pydantic uses `match`) fail to
+# parse under python_version = "3.9"; don't type-check into them.
+[[tool.mypy.overrides]]
+module = ["pydantic", "pydantic.*", "pydantic_core", "pydantic_core.*"]
+follow_imports = "skip"
+
 [tool.pytest.ini_options]
 addopts = "--strict-markers -ra"
 testpaths = ["tests"]
