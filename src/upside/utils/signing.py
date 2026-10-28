@@ -56,8 +56,7 @@ def _domain_separator(chain_id: int) -> bytes:
     )
 
 
-# The default domain (chainId 9767), used by every Agent-path action and by
-# typed actions unless the caller overrides the chain id.
+# The Devnet domain (chainId 9767), the default when no chain id is given.
 _DOMAIN_SEPARATOR = _domain_separator(constants.CHAIN_ID)
 
 # Funds / permission actions sign a field-level typed struct. Field names match
@@ -123,16 +122,26 @@ def action_hash(action: Dict[str, Any], nonce: int) -> bytes:
     return keccak(canonical + int(nonce).to_bytes(8, "big"))
 
 
-def eip712_digest(action: Dict[str, Any], nonce: int, signature_chain_id: Optional[int] = None) -> bytes:
+def _domain(chain_id: int) -> bytes:
+    return _DOMAIN_SEPARATOR if chain_id == constants.CHAIN_ID else _domain_separator(chain_id)
+
+
+def eip712_digest(
+    action: Dict[str, Any],
+    nonce: int,
+    signature_chain_id: Optional[int] = None,
+    chain_id: int = constants.CHAIN_ID,
+) -> bytes:
     """Compute the 32-byte EIP-712 digest for an action.
 
     For typed actions this mutates ``action`` to fill required-but-optional
     fields (e.g. ``agentName``) so the sent JSON matches the signed struct.
 
-    ``signature_chain_id`` overrides the domain's chain id for **typed** actions
-    only (browser-extension wallets sign with their active chain); it must then
-    also travel in the envelope's top-level ``signatureChainId``. Agent-path
-    actions always use 9767 and ignore it.
+    ``chain_id`` is the environment's chain id (Devnet 9767, Mainnet 9788).
+    ``signature_chain_id`` overrides it for **typed** actions only
+    (browser-extension wallets sign with their active chain); it must then also
+    travel in the envelope's top-level ``signatureChainId``. Agent-path actions
+    always use ``chain_id`` and ignore it.
     """
     type_str = _TYPED.get(action["type"])
     for field, variant in _TYPED_WITH_FIELD.get(action["type"], {}).items():
@@ -142,14 +151,14 @@ def eip712_digest(action: Dict[str, Any], nonce: int, signature_chain_id: Option
         for key, default in _TYPED_DEFAULTS.get(action["type"], {}).items():
             action.setdefault(key, default)
         struct = _typed_struct(type_str, action, nonce)
-        domain = _DOMAIN_SEPARATOR if signature_chain_id is None else _domain_separator(signature_chain_id)
+        domain = _domain(chain_id if signature_chain_id is None else signature_chain_id)
     else:
         struct = keccak(
             keccak(b"Agent(string source,bytes32 actionHash)")
             + keccak(constants.AGENT_SOURCE.encode())
             + action_hash(action, nonce)
         )
-        domain = _DOMAIN_SEPARATOR
+        domain = _domain(chain_id)
     return keccak(b"\x19\x01" + domain + struct)
 
 
@@ -164,12 +173,14 @@ def sign_action(
     action: Dict[str, Any],
     nonce: int,
     signature_chain_id: Optional[int] = None,
+    chain_id: int = constants.CHAIN_ID,
 ) -> Signature:
     """Return the ``{"r", "s", "v"}`` signature envelope for ``action``.
 
     ``r``/``s`` are ``0x``-prefixed lowercase 32-byte hex; ``v`` is 27 or 28.
+    ``chain_id`` / ``signature_chain_id``: see :func:`eip712_digest`.
     """
-    signed = _sign_digest(wallet, eip712_digest(action, nonce, signature_chain_id))
+    signed = _sign_digest(wallet, eip712_digest(action, nonce, signature_chain_id, chain_id))
     return {
         "r": "0x" + int(signed.r).to_bytes(32, "big").hex(),
         "s": "0x" + int(signed.s).to_bytes(32, "big").hex(),

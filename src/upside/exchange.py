@@ -37,6 +37,7 @@ when rejected. See https://docs.upsidemax.xyz/exchange/overview.
 
 import secrets
 from typing import Any, Dict, List, Optional, Tuple, Union, cast
+from urllib.parse import urlsplit
 
 from eth_account import Account
 
@@ -61,6 +62,19 @@ from .utils.types import (
 )
 
 
+def _host(url: str) -> Optional[str]:
+    return urlsplit(url if "://" in url else "//" + url).hostname
+
+
+def _chain_id_for(base_url: str) -> int:
+    """The chain id of the environment ``base_url`` points at (Devnet when unknown)."""
+    host = _host(base_url)
+    for url, chain_id in constants.CHAIN_IDS.items():
+        if _host(url) == host:
+            return chain_id
+    return constants.CHAIN_ID
+
+
 class Exchange(API):
     """Client for every state-changing operation, signed by ``wallet``.
 
@@ -73,6 +87,11 @@ class Exchange(API):
     ``sync`` that overrides it. ``timeout`` / ``max_retries`` / ``backoff``: see
     :class:`~upside.api.API` — a write is only resent when it never left this
     machine.
+
+    ``chain_id`` is the chain id every signature is made over. Left unset, it
+    follows ``base_url``: 9788 for :data:`~upside.utils.constants.MAINNET_API_URL`,
+    9767 for Devnet and any other URL. Pass it when ``base_url`` reaches Mainnet
+    under a different address.
     """
 
     def __init__(
@@ -86,6 +105,7 @@ class Exchange(API):
         sync: Optional[bool] = None,
         max_retries: int = DEFAULT_MAX_RETRIES,
         backoff: float = DEFAULT_BACKOFF,
+        chain_id: Optional[int] = None,
     ) -> None:
         super().__init__(base_url, timeout, max_retries, backoff)
         self.sync = sync
@@ -93,9 +113,10 @@ class Exchange(API):
         self.address: str = self.wallet.address.lower()
         self.account_id = str(account_id) if account_id is not None else None
         self.nonce_manager = nonce_manager or NonceManager()
+        self.chain_id: int = chain_id if chain_id is not None else _chain_id_for(self.base_url)
         # Only browser-extension wallets need this: they sign typed structs with
-        # their active chain id instead of 9767. With a raw key (what this SDK
-        # signs with) leave it unset. Agent-path actions ignore it either way.
+        # their active chain id instead of ``chain_id``. With a raw key (what this
+        # SDK signs with) leave it unset. Agent-path actions ignore it either way.
         self.signature_chain_id = signature_chain_id
 
     # ------------------------------------------------------------------ #
@@ -702,11 +723,11 @@ class Exchange(API):
     # ------------------------------------------------------------------ #
     def _post_action(self, action: Dict[str, Any], extra: Optional[Dict[str, Any]] = None) -> Json:
         nonce = self.nonce_manager.next()
-        signature: Signature = sign_action(self.wallet, action, nonce, self.signature_chain_id)
+        signature: Signature = sign_action(self.wallet, action, nonce, self.signature_chain_id, self.chain_id)
         envelope: Dict[str, Any] = {"action": action, "signature": signature, "nonce": nonce}
         if self.signature_chain_id is not None and is_typed_action(action["type"]):
             # Top level, unsigned: the server rebuilds the typed domain with it.
-            # Agent-path actions are always signed over 9767, so sending it there
+            # Agent-path actions are always signed over ``chain_id``, so sending it there
             # would advertise a chain the signature does not use.
             envelope["signatureChainId"] = hex(self.signature_chain_id)
         if extra:

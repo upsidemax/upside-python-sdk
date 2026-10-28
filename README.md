@@ -11,7 +11,8 @@ and realtime WebSocket streams. Authentication is EIP-712 wallet-signed
 - Agent (API-wallet) delegation, TP/SL, leverage/margin, and collateral actions.
 
 > The default environment is the **UpsideMAX Devnet** (`https://dev.upsidemax.xyz`,
-> `constants.DEVNET_API_URL`).
+> `constants.DEVNET_API_URL`). For **Mainnet**, pass
+> `base_url=constants.MAINNET_API_URL` (`https://upsidemax.xyz`).
 > Contract IDs, scales, and tick/step sizes are server-assigned — always read
 > them from `configs`, never hardcode.
 
@@ -249,16 +250,17 @@ rather than the compact wire ones), and `trades` (recent trades, flagged
 your callback still has to read both shapes.
 
 `asset` may be given as an int; it is sent as the string the server requires.
-A refused subscription comes back as an `error` frame that does not say which
-subscription it was — pass `Info(ws_error_callback=...)` to see those (and
-failed `AuthResult` frames). Callbacks run on the socket's reader thread, so
-keep them short.
+A refused subscription comes back as an `error` frame whose `data.subscription`
+echoes the refused request — pass `Info(ws_error_callback=...)` to see those.
+Callbacks run on the socket's reader thread, so keep them short.
 
 ## Signing
 
-Every `/exchange` write is authorized by an EIP-712 signature over a fixed
-domain (`Exchange` / `1` / chainId `9767` / zero verifying contract). The SDK
-handles both paths automatically:
+Every `/exchange` write is authorized by an EIP-712 signature over the domain
+`Exchange` / `1` / chainId / zero verifying contract. The chain id depends on the
+environment — **9767** on Devnet, **9788** on Mainnet — and `Exchange` picks it
+from `base_url`; pass `chain_id=` if you reach Mainnet through another address.
+The SDK handles both paths automatically:
 
 - **Typed path** — `registerAccount`, `approveAgent`, `revokeAgent`,
   `lockCollateral`, `unlockCollateral`, `transferBetweenDeployers`.
@@ -266,7 +268,7 @@ handles both paths automatically:
 
 Nonces are strictly increasing millisecond timestamps managed per `Exchange`
 instance (`NonceManager`). Browser-extension wallets sign typed structs with
-their active chain instead of 9767; pass `Exchange(..., signature_chain_id=...)`
+their active chain instead of the environment's; pass `Exchange(..., signature_chain_id=...)`
 to match that and the SDK sends the unsigned top-level `signatureChainId` the
 server needs to rebuild the domain.
 

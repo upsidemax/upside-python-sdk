@@ -57,6 +57,28 @@ def test_domain_separator_uses_chain_id_9767():
     assert len(signing._DOMAIN_SEPARATOR) == 32
 
 
+@pytest.mark.parametrize(
+    "action", [{"type": "registerAccount", "address": ADDRESS}, ORDER_ACTION], ids=["typed", "agent"]
+)
+def test_mainnet_chain_id_changes_the_digest_on_both_paths(wallet, action):
+    devnet = signing.eip712_digest(dict(action), NONCE)
+    mainnet = signing.eip712_digest(dict(action), NONCE, chain_id=constants.MAINNET_CHAIN_ID)
+    assert devnet != mainnet
+    assert signing.eip712_digest(dict(action), NONCE, chain_id=constants.DEVNET_CHAIN_ID) == devnet
+    sig = signing.sign_action(wallet, dict(action), NONCE, chain_id=constants.MAINNET_CHAIN_ID)
+    assert _recover(mainnet, sig) == ADDRESS
+
+
+def test_signature_chain_id_overrides_mainnet_on_typed_path_only():
+    typed = {"type": "registerAccount", "address": ADDRESS}
+    assert signing.eip712_digest(dict(typed), NONCE, 1, chain_id=constants.MAINNET_CHAIN_ID) == signing.eip712_digest(
+        dict(typed), NONCE, 1
+    )
+    assert signing.eip712_digest(
+        dict(ORDER_ACTION), NONCE, 1, chain_id=constants.MAINNET_CHAIN_ID
+    ) == signing.eip712_digest(dict(ORDER_ACTION), NONCE, chain_id=constants.MAINNET_CHAIN_ID)
+
+
 def test_typed_path_digest_and_signature_are_stable(wallet):
     action = {"type": "registerAccount", "address": ADDRESS}
     assert "0x" + signing.eip712_digest(dict(action), NONCE).hex() == REGISTER_DIGEST

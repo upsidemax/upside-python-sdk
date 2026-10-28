@@ -490,7 +490,7 @@ def test_signature_chain_id_travels_unsigned_at_top_level(fake_session):
 
     ex.cancel_all(1)
     env = fake_session.last["json"]
-    digest = signing.eip712_digest(env["action"], env["nonce"])  # Agent path: always 9767
+    digest = signing.eip712_digest(env["action"], env["nonce"])  # Agent path: the Devnet chain id
     sig = env["signature"]
     assert Account._recover_hash(digest, vrs=(sig["v"], int(sig["r"], 16), int(sig["s"], 16))).lower() == ADDRESS
 
@@ -593,13 +593,46 @@ def test_batch_allows_zeroed_tpsl_legs(exchange, fake_session):
 
 
 def test_signature_chain_id_is_omitted_on_agent_path_actions(fake_session):
-    """Agent-path actions always sign over 9767; announcing another chain would lie."""
+    """Agent-path actions always sign over the environment's chain id; announcing another would lie."""
     ex = Exchange(PRIVATE_KEY, base_url="https://dev.upsidemax.xyz", signature_chain_id=1)
     ex.session = fake_session
     ex.order(asset=1, is_buy=True, size="1", price="1")
     assert "signatureChainId" not in fake_session.last["json"]
     ex.revoke_agent("0x" + "cd" * 20)  # typed path
     assert fake_session.last["json"]["signatureChainId"] == "0x1"
+
+
+@pytest.mark.parametrize(
+    "base_url, chain_id",
+    [
+        ("https://upsidemax.xyz", 9788),
+        ("https://upsidemax.xyz/", 9788),
+        ("upsidemax.xyz", 9788),
+        ("https://dev.upsidemax.xyz", 9767),
+        ("http://localhost:9090", 9767),
+    ],
+)
+def test_chain_id_follows_base_url(base_url, chain_id):
+    assert Exchange(PRIVATE_KEY, base_url=base_url).chain_id == chain_id
+
+
+def test_explicit_chain_id_wins_over_base_url():
+    assert Exchange(PRIVATE_KEY, base_url="https://upsidemax.xyz", chain_id=9767).chain_id == 9767
+    assert Exchange(PRIVATE_KEY, base_url="http://localhost:9090", chain_id=9788).chain_id == 9788
+
+
+def test_mainnet_signs_both_paths_over_9788(fake_session):
+    from upside.utils import signing
+
+    ex = Exchange(PRIVATE_KEY, base_url="https://upsidemax.xyz")
+    ex.session = fake_session
+    for send in (ex.register_account, lambda: ex.cancel_all(1)):
+        send()
+        env = fake_session.last["json"]
+        assert "signatureChainId" not in env
+        digest = signing.eip712_digest(env["action"], env["nonce"], chain_id=9788)
+        sig = env["signature"]
+        assert Account._recover_hash(digest, vrs=(sig["v"], int(sig["r"], 16), int(sig["s"], 16))).lower() == ADDRESS
 
 
 # -- envelope sync flag --------------------------------------------------------
