@@ -69,7 +69,7 @@ def test_signature_recovers_to_wallet(exchange, fake_session):
 
     exchange.order(asset=1, is_buy=True, size="10", price="50")
     env = fake_session.last["json"]
-    digest = signing.eip712_digest(env["action"], env["nonce"])
+    digest = signing.eip712_digest(env["action"], env["nonce"], chain_id=9767)
     sig = env["signature"]
     recovered = Account._recover_hash(digest, vrs=(sig["v"], int(sig["r"], 16), int(sig["s"], 16)))
     assert recovered.lower() == ADDRESS
@@ -490,7 +490,9 @@ def test_signature_chain_id_travels_unsigned_at_top_level(fake_session):
 
     ex.cancel_all(1)
     env = fake_session.last["json"]
-    digest = signing.eip712_digest(env["action"], env["nonce"])  # Agent path: the Devnet chain id
+    digest = signing.eip712_digest(
+        env["action"], env["nonce"], chain_id=9767
+    )  # Agent path: the environment (Devnet) chain id
     sig = env["signature"]
     assert Account._recover_hash(digest, vrs=(sig["v"], int(sig["r"], 16), int(sig["s"], 16))).lower() == ADDRESS
 
@@ -546,7 +548,7 @@ def test_typed_path_signature_recovers(exchange, fake_session):
 
     exchange.lock_collateral(1, 1, "1000")
     env = fake_session.last["json"]
-    digest = signing.eip712_digest(env["action"], env["nonce"])
+    digest = signing.eip712_digest(env["action"], env["nonce"], chain_id=9767)
     sig = env["signature"]
     recovered = Account._recover_hash(digest, vrs=(sig["v"], int(sig["r"], 16), int(sig["s"], 16)))
     assert recovered.lower() == ADDRESS
@@ -609,7 +611,7 @@ def test_signature_chain_id_is_omitted_on_agent_path_actions(fake_session):
         ("https://upsidemax.xyz/", 9788),
         ("upsidemax.xyz", 9788),
         ("https://dev.upsidemax.xyz", 9767),
-        ("http://localhost:9090", 9767),
+        ("http://localhost:9090", 9788),
     ],
 )
 def test_chain_id_follows_base_url(base_url, chain_id):
@@ -618,7 +620,13 @@ def test_chain_id_follows_base_url(base_url, chain_id):
 
 def test_explicit_chain_id_wins_over_base_url():
     assert Exchange(PRIVATE_KEY, base_url="https://upsidemax.xyz", chain_id=9767).chain_id == 9767
-    assert Exchange(PRIVATE_KEY, base_url="http://localhost:9090", chain_id=9788).chain_id == 9788
+    assert Exchange(PRIVATE_KEY, base_url="http://localhost:9090", chain_id=9767).chain_id == 9767
+
+
+def test_default_environment_is_mainnet():
+    ex = Exchange(PRIVATE_KEY)
+    assert ex.base_url == "https://upsidemax.xyz"
+    assert ex.chain_id == 9788
 
 
 def test_mainnet_signs_both_paths_over_9788(fake_session):
@@ -667,7 +675,7 @@ def test_sync_rides_on_the_envelope_unsigned(exchange, fake_session, name, value
 
     sig = env["signature"]
     vrs = (sig["v"], int(sig["r"], 16), int(sig["s"], 16))
-    digest = eip712_digest(dict(env["action"]), env["nonce"])
+    digest = eip712_digest(dict(env["action"]), env["nonce"], chain_id=9767)
     assert Account._recover_hash(digest, vrs=vrs).lower() == ADDRESS
 
 

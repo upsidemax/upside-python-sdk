@@ -12,8 +12,8 @@ and realtime WebSocket streams. Authentication is EIP-712 wallet-signed
 
 > **Mainnet:** `https://upsidemax.xyz` (`constants.MAINNET_API_URL`, chain ID 9788).
 > Devnet: `https://dev.upsidemax.xyz` (`constants.DEVNET_API_URL`, chain ID 9767).
-> Without a `base_url` the SDK uses Devnet, so pass `constants.MAINNET_API_URL`
-> explicitly for Mainnet.
+> Without a `base_url` the SDK uses Mainnet; pass `constants.DEVNET_API_URL`
+> for Devnet.
 > Contract IDs, scales, and tick/step sizes are server-assigned — always read
 > them from `configs`, never hardcode.
 
@@ -260,7 +260,8 @@ Callbacks run on the socket's reader thread, so keep them short.
 Every `/exchange` write is authorized by an EIP-712 signature over the domain
 `Exchange` / `1` / chainId / zero verifying contract. The chain id depends on the
 environment — **9788** on Mainnet, **9767** on Devnet — and `Exchange` picks it
-from `base_url`; pass `chain_id=` if you reach Mainnet through another address.
+from `base_url`; pass `chain_id=` if you reach Devnet through another address
+(any URL other than the Devnet one signs over 9788).
 The SDK handles both paths automatically:
 
 - **Typed path** — `registerAccount`, `approveAgent`, `revokeAgent`,

@@ -89,7 +89,7 @@ class API:
     ) -> None:
         if max_retries < 0:
             raise ValueError("max_retries must be >= 0")
-        self.base_url = (base_url or constants.DEVNET_API_URL).rstrip("/")
+        self.base_url = (base_url or constants.DEFAULT_API_URL).rstrip("/")
         self.timeout: Timeout = DEFAULT_TIMEOUT if timeout is None else timeout
         self.max_retries = max_retries
         self.backoff = backoff

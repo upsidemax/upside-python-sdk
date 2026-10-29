@@ -51,9 +51,9 @@ def test_address_matches(wallet):
     assert wallet.address.lower() == ADDRESS
 
 
-def test_domain_separator_uses_chain_id_9767():
-    # Sanity: the domain constant is built from chainId 9767 (regression guard).
-    assert constants.CHAIN_ID == 9767
+def test_default_domain_is_mainnet():
+    # Sanity: the default domain is Mainnet's chainId 9788 (regression guard).
+    assert constants.CHAIN_ID == constants.MAINNET_CHAIN_ID == 9788
     assert len(signing._DOMAIN_SEPARATOR) == 32
 
 
@@ -61,7 +61,7 @@ def test_domain_separator_uses_chain_id_9767():
     "action", [{"type": "registerAccount", "address": ADDRESS}, ORDER_ACTION], ids=["typed", "agent"]
 )
 def test_mainnet_chain_id_changes_the_digest_on_both_paths(wallet, action):
-    devnet = signing.eip712_digest(dict(action), NONCE)
+    devnet = signing.eip712_digest(dict(action), NONCE, chain_id=constants.DEVNET_CHAIN_ID)
     mainnet = signing.eip712_digest(dict(action), NONCE, chain_id=constants.MAINNET_CHAIN_ID)
     assert devnet != mainnet
     assert signing.eip712_digest(dict(action), NONCE, chain_id=constants.DEVNET_CHAIN_ID) == devnet
@@ -81,31 +81,36 @@ def test_signature_chain_id_overrides_mainnet_on_typed_path_only():
 
 def test_typed_path_digest_and_signature_are_stable(wallet):
     action = {"type": "registerAccount", "address": ADDRESS}
-    assert "0x" + signing.eip712_digest(dict(action), NONCE).hex() == REGISTER_DIGEST
-    assert signing.sign_action(wallet, dict(action), NONCE) == REGISTER_SIG
+    assert (
+        "0x" + signing.eip712_digest(dict(action), NONCE, chain_id=constants.DEVNET_CHAIN_ID).hex() == REGISTER_DIGEST
+    )
+    assert signing.sign_action(wallet, dict(action), NONCE, chain_id=constants.DEVNET_CHAIN_ID) == REGISTER_SIG
 
 
 def test_agent_path_digest_and_signature_are_stable(wallet):
-    assert "0x" + signing.eip712_digest(dict(ORDER_ACTION), NONCE).hex() == ORDER_DIGEST
-    assert signing.sign_action(wallet, dict(ORDER_ACTION), NONCE) == ORDER_SIG
+    assert (
+        "0x" + signing.eip712_digest(dict(ORDER_ACTION), NONCE, chain_id=constants.DEVNET_CHAIN_ID).hex()
+        == ORDER_DIGEST
+    )
+    assert signing.sign_action(wallet, dict(ORDER_ACTION), NONCE, chain_id=constants.DEVNET_CHAIN_ID) == ORDER_SIG
 
 
 def test_typed_path_recovers_signer(wallet):
     action = {"type": "registerAccount", "address": ADDRESS}
-    digest = signing.eip712_digest(dict(action), NONCE)
-    sig = signing.sign_action(wallet, dict(action), NONCE)
+    digest = signing.eip712_digest(dict(action), NONCE, chain_id=constants.DEVNET_CHAIN_ID)
+    sig = signing.sign_action(wallet, dict(action), NONCE, chain_id=constants.DEVNET_CHAIN_ID)
     assert _recover(digest, sig) == ADDRESS
 
 
 def test_agent_path_recovers_signer(wallet):
-    digest = signing.eip712_digest(dict(ORDER_ACTION), NONCE)
-    sig = signing.sign_action(wallet, dict(ORDER_ACTION), NONCE)
+    digest = signing.eip712_digest(dict(ORDER_ACTION), NONCE, chain_id=constants.DEVNET_CHAIN_ID)
+    sig = signing.sign_action(wallet, dict(ORDER_ACTION), NONCE, chain_id=constants.DEVNET_CHAIN_ID)
     assert _recover(digest, sig) == ADDRESS
 
 
 def test_approve_agent_injects_typed_defaults():
     action = {"type": "approveAgent", "agentAddress": "0x" + "ab" * 20}
-    signing.eip712_digest(action, NONCE)
+    signing.eip712_digest(action, NONCE, chain_id=constants.DEVNET_CHAIN_ID)
     assert action["agentName"] == ""
     assert action["validUntil"] == 0
 
@@ -120,7 +125,7 @@ def test_action_hash_uses_canonical_json():
 
 
 def test_v_is_normalized_to_27_or_28(wallet):
-    sig = signing.sign_action(wallet, dict(ORDER_ACTION), NONCE)
+    sig = signing.sign_action(wallet, dict(ORDER_ACTION), NONCE, chain_id=constants.DEVNET_CHAIN_ID)
     assert sig["v"] in (27, 28)
     assert sig["r"].startswith("0x") and len(sig["r"]) == 66
 

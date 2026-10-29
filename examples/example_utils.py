@@ -26,7 +26,7 @@ def load_config() -> Dict[str, Any]:
 def setup(skip_ws: bool = True) -> Tuple[Dict[str, Any], Info, Exchange]:
     """Return ``(config, info, exchange)`` wired to the configured environment."""
     config = load_config()
-    base_url = config.get("base_url") or constants.DEVNET_API_URL
+    base_url = config.get("base_url") or constants.MAINNET_API_URL
     info = Info(base_url=base_url, skip_ws=skip_ws)
     exchange = Exchange(config["private_key"], base_url=base_url, account_id=config.get("account_id"))
     return config, info, exchange

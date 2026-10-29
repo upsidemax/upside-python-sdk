@@ -56,7 +56,7 @@ def _domain_separator(chain_id: int) -> bytes:
     )
 
 
-# The Devnet domain (chainId 9767), the default when no chain id is given.
+# The Mainnet domain (chainId 9788), the default when no chain id is given.
 _DOMAIN_SEPARATOR = _domain_separator(constants.CHAIN_ID)
 
 # Funds / permission actions sign a field-level typed struct. Field names match

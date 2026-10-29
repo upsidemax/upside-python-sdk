@@ -6,7 +6,7 @@ them from ``Info.configs()`` rather than hardcoding.
 """
 
 # REST + WebSocket base URLs. A base URL is the scheme + host only; the SDK
-# appends ``/info``, ``/exchange`` for REST and derives the ``/ws`` path. Devnet
+# appends ``/info``, ``/exchange`` for REST and derives the ``/ws`` path. Mainnet
 # is the default.
 DEVNET_API_URL = "https://dev.upsidemax.xyz"
 MAINNET_API_URL = "https://upsidemax.xyz"
@@ -16,10 +16,11 @@ MAINNET_API_URL = "https://upsidemax.xyz"
 DEVNET_CHAIN_ID = 9767
 MAINNET_CHAIN_ID = 9788
 # Chain id that ``Exchange`` signs with for each known base URL; any other URL
-# falls back to the Devnet id unless ``chain_id`` is passed.
+# falls back to the Mainnet id unless ``chain_id`` is passed.
 CHAIN_IDS = {DEVNET_API_URL: DEVNET_CHAIN_ID, MAINNET_API_URL: MAINNET_CHAIN_ID}
-# Default chain id (Devnet), kept for code that imported it before Mainnet.
-CHAIN_ID = DEVNET_CHAIN_ID
+# Default environment: used when no ``base_url`` / ``chain_id`` is given.
+DEFAULT_API_URL = MAINNET_API_URL
+CHAIN_ID = MAINNET_CHAIN_ID
 DOMAIN_NAME = "Exchange"
 DOMAIN_VERSION = "1"
 VERIFYING_CONTRACT = "0x0000000000000000000000000000000000000000"

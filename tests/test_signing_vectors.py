@@ -1,11 +1,13 @@
 """EIP-712 digests pinned to the server's reference vectors.
 
-Values are the server's reference vectors (2026-10-23). A mismatch here means
+Values are the server's reference vectors (2026-10-23), computed over the
+Devnet domain (chainId 9767). A mismatch here means
 the server would recover a different signer: ``401 SIGNATURE_INVALID``.
 """
 
 import pytest
 
+from upside.utils import constants
 from upside.utils.signing import action_hash, eip712_digest
 
 NONCE = 1788825823650
@@ -62,15 +64,23 @@ VECTORS = [
 
 @pytest.mark.parametrize("action, expected", VECTORS, ids=[f"{a['type']}-{i}" for i, (a, _) in enumerate(VECTORS)])
 def test_digest_matches_server_vector(action, expected):
-    assert eip712_digest(dict(action), NONCE).hex() == expected
+    assert eip712_digest(dict(action), NONCE, chain_id=constants.DEVNET_CHAIN_ID).hex() == expected
 
 
 def test_typed_uint_given_as_string_is_refused_locally():
     """The server hashes a uint only from a JSON number; a string would never verify."""
     with pytest.raises(TypeError):
-        eip712_digest({"type": "registerAccount", "address": A, "marketDeployerId": "1"}, NONCE)
+        eip712_digest(
+            {"type": "registerAccount", "address": A, "marketDeployerId": "1"},
+            NONCE,
+            chain_id=constants.DEVNET_CHAIN_ID,
+        )
     with pytest.raises(TypeError):
-        eip712_digest({"type": "lockCollateral", "marketDeployerId": True, "coinId": 3, "amount": "1"}, NONCE)
+        eip712_digest(
+            {"type": "lockCollateral", "marketDeployerId": True, "coinId": 3, "amount": "1"},
+            NONCE,
+            chain_id=constants.DEVNET_CHAIN_ID,
+        )
 
 
 def test_agent_hash_keeps_non_ascii_as_raw_utf8():

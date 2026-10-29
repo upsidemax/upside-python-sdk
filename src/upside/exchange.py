@@ -67,7 +67,7 @@ def _host(url: str) -> Optional[str]:
 
 
 def _chain_id_for(base_url: str) -> int:
-    """The chain id of the environment ``base_url`` points at (Devnet when unknown)."""
+    """The chain id of the environment ``base_url`` points at (Mainnet when unknown)."""
     host = _host(base_url)
     for url, chain_id in constants.CHAIN_IDS.items():
         if _host(url) == host:
@@ -89,8 +89,8 @@ class Exchange(API):
     machine.
 
     ``chain_id`` is the chain id every signature is made over. Left unset, it
-    follows ``base_url``: 9788 for :data:`~upside.utils.constants.MAINNET_API_URL`,
-    9767 for Devnet and any other URL. Pass it when ``base_url`` reaches Mainnet
+    follows ``base_url``: 9767 for :data:`~upside.utils.constants.DEVNET_API_URL`,
+    9788 for Mainnet and any other URL. Pass it when ``base_url`` reaches Devnet
     under a different address.
     """
 
