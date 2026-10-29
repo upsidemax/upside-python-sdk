@@ -130,12 +130,11 @@ class Exchange(API):
     ) -> Dict[str, Any]:
         """Register the wallet and receive an ``accountId`` (typed path).
 
-        ``invite_code`` is required in gated environments (Devnet) and is sent
+        ``invite_code`` is required (Mainnet and Devnet) and is sent
         unsigned at the envelope top level. ``market_deployer_id`` enrolls the
         new account in that market deployer in the same step (``0`` = register
-        only); omitted, the server enrolls it in its default deployer. On Devnet
-        a successful registration is followed by a test airdrop into the enrolled
-        deployer — wait for this call's 200 before expecting it.
+        only); omitted, the server enrolls it in its default deployer. The new
+        account starts with no balance.
 
         ``address`` must be this wallet's own address (the server requires the
         signer to match); it is accepted only for explicitness.

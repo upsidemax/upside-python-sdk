@@ -10,9 +10,10 @@ and realtime WebSocket streams. Authentication is EIP-712 wallet-signed
 - Raw-dict responses, `TypedDict` inputs, full type hints (ships `py.typed`).
 - Agent (API-wallet) delegation, TP/SL, leverage/margin, and collateral actions.
 
-> The default environment is the **UpsideMAX Devnet** (`https://dev.upsidemax.xyz`,
-> `constants.DEVNET_API_URL`). For **Mainnet**, pass
-> `base_url=constants.MAINNET_API_URL` (`https://upsidemax.xyz`).
+> **Mainnet:** `https://upsidemax.xyz` (`constants.MAINNET_API_URL`, chain ID 9788).
+> Devnet: `https://dev.upsidemax.xyz` (`constants.DEVNET_API_URL`, chain ID 9767).
+> Without a `base_url` the SDK uses Devnet, so pass `constants.MAINNET_API_URL`
+> explicitly for Mainnet.
 > Contract IDs, scales, and tick/step sizes are server-assigned — always read
 > them from `configs`, never hardcode.
 
@@ -32,17 +33,17 @@ from upside import Info, Exchange
 from upside.utils import constants
 
 # --- reads (no signing) ---
-info = Info(base_url=constants.DEVNET_API_URL)
+info = Info(base_url=constants.MAINNET_API_URL)
 cfg = info.configs()
 contract = next(c for c in cfg["contracts"] if c["status"] == "Active")
 asset = contract["contractId"]
 print(info.market_state(asset))
 
 # --- writes (EIP-712 signed) ---
-exchange = Exchange("0x<private-key>", base_url=constants.DEVNET_API_URL)
+exchange = Exchange("0x<private-key>", base_url=constants.MAINNET_API_URL)   # signs over 9788
 
-# Register (Devnet requires an invite code from the UpsideMAX team). A test airdrop
-# follows once this call has returned 200.
+# Register with an invite code from the UpsideMAX team. The new account has no
+# balance — fund it before trading.
 exchange.register_account(invite_code="<invite-code>")
 
 # Place a resting limit buy. Prices/sizes are raw integer strings — scale them
@@ -212,7 +213,7 @@ server routes agent-signed actions to the master account.
 
 ```python
 response, agent_key = master.approve_agent(agent_name="bot1")   # generates a fresh key
-agent = Exchange(agent_key, base_url=constants.DEVNET_API_URL, account_id=master.account_id)
+agent = Exchange(agent_key, base_url=constants.MAINNET_API_URL, account_id=master.account_id)
 agent.order(asset=1, is_buy=True, size="10", price="50")
 master.revoke_agent(agent.address)
 ```
@@ -220,7 +221,7 @@ master.revoke_agent(agent.address)
 ## WebSocket streams
 
 ```python
-info = Info(base_url=constants.DEVNET_API_URL)          # WS starts automatically
+info = Info(base_url=constants.MAINNET_API_URL)         # WS starts automatically
 
 sid = info.subscribe({"type": "l2Book", "asset": "1"}, lambda m: print(m["data"]["levels"][0][:1]))
 info.subscribe({"type": "l2Book", "asset": "1", "group": 1000}, print)  # a price grouping from configs digitMerge
@@ -258,7 +259,7 @@ Callbacks run on the socket's reader thread, so keep them short.
 
 Every `/exchange` write is authorized by an EIP-712 signature over the domain
 `Exchange` / `1` / chainId / zero verifying contract. The chain id depends on the
-environment — **9767** on Devnet, **9788** on Mainnet — and `Exchange` picks it
+environment — **9788** on Mainnet, **9767** on Devnet — and `Exchange` picks it
 from `base_url`; pass `chain_id=` if you reach Mainnet through another address.
 The SDK handles both paths automatically:
 
@@ -278,10 +279,11 @@ See
 ## Examples
 
 Runnable scripts live in [`examples/`](examples). Copy `config.json.example` to
-`config.json`, set your test wallet and invite code, then:
+`config.json`, set your wallet and invite code, then (the example config targets
+Mainnet, which trades real funds):
 
 ```bash
-python examples/01_register_and_airdrop.py
+python examples/01_register.py
 python examples/03_place_and_cancel_order.py
 python examples/06_websocket_streams.py
 ```

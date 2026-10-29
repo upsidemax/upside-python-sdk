@@ -15,7 +15,7 @@ def main() -> None:
     config, info, exchange = example_utils.setup()
     md = config["market_deployer_id"]
     account_id = exchange.account_id
-    assert account_id is not None, "run 01_register_and_airdrop.py first and set account_id"
+    assert account_id is not None, "run 01_register.py first and set account_id"
 
     contract = example_utils.pick_contract(info)
     asset = contract["contractId"]

@@ -1,8 +1,9 @@
 """Shared bootstrap for the example scripts.
 
-Copy ``config.json.example`` to ``config.json`` and fill in your test wallet's
-``private_key`` and (for Devnet) an ``invite_code`` from the UpsideMAX team. All
-examples run against the UpsideMAX Devnet by default.
+Copy ``config.json.example`` to ``config.json`` and fill in your wallet's
+``private_key`` and an ``invite_code`` from the UpsideMAX team. The example
+config targets Mainnet (``https://upsidemax.xyz``), which trades real funds; set
+``base_url`` to ``https://dev.upsidemax.xyz`` for Devnet.
 """
 
 import json

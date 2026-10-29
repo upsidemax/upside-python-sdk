@@ -1,7 +1,10 @@
-"""Register a new account on Devnet and wait for the 10,000 USDC test airdrop.
+"""Register a new account and check whether it has usable margin.
 
 Set ``private_key`` and ``invite_code`` in config.json first. On success the
 returned accountId is printed — save it back into config.json for later runs.
+A new account starts with no balance: fund it before running the trading
+examples. Funds already held as a chain-level balance are moved into the market
+deployer with ``lock_collateral``.
 """
 
 import time
@@ -29,20 +32,24 @@ def main() -> None:
     account_id = exchange.account_id
     assert account_id is not None, "no accountId — registration failed"
 
-    print("waiting for margin to become available (airdrop ~10s)...")
-    for _ in range(30):
-        acct = info.user_account(account_id, md)
-        if int(acct.get("marginAvailableForOrder", "0")) > 0:
-            print("margin available:", acct["marginAvailableForOrder"])
-            break
-        # If funds landed as a chain balance, lock them into the market deployer.
+    def margin() -> int:
+        return int(info.user_account(account_id, md).get("marginAvailableForOrder", "0"))
+
+    if margin() == 0:
         overview = info.user_account(account_id, 0)
         chain = next((c for c in overview.get("chainBalances", []) if c["coinId"] == usdc), None)
         if chain and int(chain["amount"]) > 0:
             exchange.lock_collateral(md, usdc, chain["amount"])
-        time.sleep(1)
+            for _ in range(10):
+                if margin() > 0:
+                    break
+                time.sleep(1)
+
+    available = margin()
+    if available > 0:
+        print("margin available:", available)
     else:
-        print("airdrop not yet reflected; try again shortly")
+        print(f"account {account_id} has no usable margin — fund it before trading")
 
 
 if __name__ == "__main__":
